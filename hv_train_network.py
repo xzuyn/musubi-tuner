@@ -1954,6 +1954,15 @@ class NetworkTrainer:
             self.sample_images(accelerator, args, epoch + 1, global_step, vae, transformer, sample_parameters, dit_dtype)
             optimizer_train_fn()
 
+            # force garbage collection
+            collected = gc.collect()
+
+            # output memory usage for debugging
+            import psutil
+
+            print(f"GC collected {collected} objects")
+            print(f"RAM usage: {psutil.Process().memory_info().rss / (1024 * 1024):.2f} MB")
+
             # end of epoch
 
         # metadata["ss_epoch"] = str(num_train_epochs)
