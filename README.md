@@ -38,11 +38,18 @@
 
 ## Introduction
 
-This repository provides scripts for training LoRA (Low-Rank Adaptation) models with HunyuanVideo. This repository is unofficial and not affiliated with the official HunyanVideo repository.
+This repository provides scripts for training LoRA (Low-Rank Adaptation) models with HunyuanVideo or Wan2.1 models. 
+
+This repository is unofficial and not affiliated with the official HunyanVideo/Wan2.1 repository.
+
+For Wan2.1, please also refer to [Wan2.1 documentation](./docs/wan.md).
 
 *This repository is under development.*
 
 ### Recent Updates
+
+- Mar 9, 2025
+    - Fixed `--t5` option is required for training even without sampling images for Wan2.1 training.
 
 - Mar 7, 2025
     - Added support for Wan 2.1 LoRA training. Please use `wan_train_network.py`. For details, please refer to [here](./docs/wan.md).
