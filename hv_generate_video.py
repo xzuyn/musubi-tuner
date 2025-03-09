@@ -21,6 +21,7 @@ from safetensors import safe_open
 from PIL import Image
 
 from hunyuan_model import vae
+from hunyuan_model import text_encoder
 from hunyuan_model.text_encoder import TextEncoder
 from hunyuan_model.text_encoder import PROMPT_TEMPLATE
 from hunyuan_model.vae import load_vae
@@ -151,13 +152,21 @@ def save_images_grid(
 # region Encoding prompt
 
 
-def encode_prompt(prompt: Union[str, list[str]], device: torch.device, num_videos_per_prompt: int, text_encoder: TextEncoder):
+def encode_prompt(
+    prompt: Union[str, list[str]],
+    semantic_images: Optional[Union[Image.Image, list[Image.Image]]],
+    device: torch.device,
+    num_videos_per_prompt: int,
+    text_encoder: TextEncoder,
+):
     r"""
     Encodes the prompt into text encoder hidden states.
 
     Args:
         prompt (`str` or `List[str]`):
             prompt to be encoded
+        semantic_images (`Image.Image` or `List[Image.Image]`):
+            semantic images to be used for I2V model
         device: (`torch.device`):
             torch device
         num_videos_per_prompt (`int`):
@@ -170,10 +179,10 @@ def encode_prompt(prompt: Union[str, list[str]], device: torch.device, num_video
     # clip_skip is not supported in this script because it is not used in the original script
     data_type = "video"  # video only, image is not supported
 
-    text_inputs = text_encoder.text2tokens(prompt, data_type=data_type)
+    text_inputs = text_encoder.text2tokens(prompt, data_type=data_type, semantic_images=semantic_images)
 
     with torch.no_grad():
-        prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type, device=device)
+        prompt_outputs = text_encoder.encode(text_inputs, data_type=data_type, device=device, semantic_images=semantic_images)
     prompt_embeds = prompt_outputs.hidden_state
 
     attention_mask = prompt_outputs.attention_mask
@@ -200,30 +209,41 @@ def encode_prompt(prompt: Union[str, list[str]], device: torch.device, num_video
     return prompt_embeds, attention_mask
 
 
-def encode_input_prompt(prompt: Union[str, list[str]], args, device, fp8_llm=False, accelerator=None):
+def encode_input_prompt(
+    hunyuan_video_i2v: bool,
+    prompt: Union[str, list[str]],
+    semantic_images: Optional[Union[Image.Image, list[Image.Image]]],
+    image_embed_interleave: Optional[int],
+    args,
+    device,
+    fp8_llm=False,
+    accelerator=None,
+):
     # constants
-    prompt_template_video = "dit-llm-encode-video"
-    prompt_template = "dit-llm-encode"
-    text_encoder_dtype = torch.float16
-    text_encoder_type = "llm"
-    text_len = 256
-    hidden_state_skip_layer = 2
-    apply_final_norm = False
-    reproduce = False
+    prompt_template_video = "dit-llm-encode-video" if not hunyuan_video_i2v else "dit-llm-encode-video-i2v"
+    prompt_template = "dit-llm-encode" if not hunyuan_video_i2v else "dit-llm-encode-i2v"
+    # text_encoder_dtype = torch.float16
+    # text_encoder_type = "llm" if not hunyuan_video_i2v else "llm-i2v"
+    # text_len = 256
+    # hidden_state_skip_layer = 2
+    # apply_final_norm = False
+    # reproduce = False
 
-    text_encoder_2_type = "clipL"
-    text_len_2 = 77
+    # text_encoder_2_type = "clipL"
+    # text_len_2 = 77
 
     num_videos = 1
 
-    # if args.prompt_template_video is not None:
-    #     crop_start = PROMPT_TEMPLATE[args.prompt_template_video].get("crop_start", 0)
-    # elif args.prompt_template is not None:
-    #     crop_start = PROMPT_TEMPLATE[args.prompt_template].get("crop_start", 0)
-    # else:
-    #     crop_start = 0
-    crop_start = PROMPT_TEMPLATE[prompt_template_video].get("crop_start", 0)
-    max_length = text_len + crop_start
+    if type(prompt) == list:
+        # use default negative prompt for None
+        default_negative_prompt = text_encoder.NEGATIVE_PROMPT if not hunyuan_video_i2v else text_encoder.NEGATIVE_PROMPT_I2V
+        replaced_prompt = [p if p is not None else default_negative_prompt for p in prompt]
+        prompt = replaced_prompt
+    if semantic_images is not None and type(semantic_images) != list:
+        semantic_images = [semantic_images]
+
+    # crop_start = PROMPT_TEMPLATE[prompt_template_video].get("crop_start", 0)
+    # max_length = text_len + crop_start
 
     # prompt_template
     prompt_template = PROMPT_TEMPLATE[prompt_template]
@@ -233,71 +253,34 @@ def encode_input_prompt(prompt: Union[str, list[str]], args, device, fp8_llm=Fal
 
     # load text encoders
     logger.info(f"loading text encoder: {args.text_encoder1}")
-    text_encoder = TextEncoder(
-        text_encoder_type=text_encoder_type,
-        max_length=max_length,
-        text_encoder_dtype=text_encoder_dtype,
-        text_encoder_path=args.text_encoder1,
-        tokenizer_type=text_encoder_type,
-        prompt_template=prompt_template,
-        prompt_template_video=prompt_template_video,
-        hidden_state_skip_layer=hidden_state_skip_layer,
-        apply_final_norm=apply_final_norm,
-        reproduce=reproduce,
+    text_encoder_1 = text_encoder.load_text_encoder_1(
+        text_encoder_dir=args.text_encoder1,
+        device="cpu",
+        fp8_llm=fp8_llm,
+        i2v_mode=hunyuan_video_i2v,
+        image_embed_interleave=image_embed_interleave,
+        clip_vision_path=args.clip_vision_path,
     )
-    text_encoder.eval()
-    if fp8_llm:
-        org_dtype = text_encoder.dtype
-        logger.info(f"Moving and casting text encoder to {device} and torch.float8_e4m3fn")
-        text_encoder.to(device=device, dtype=torch.float8_e4m3fn)
-
-        # prepare LLM for fp8
-        def prepare_fp8(llama_model: LlamaModel, target_dtype):
-            def forward_hook(module):
-                def forward(hidden_states):
-                    input_dtype = hidden_states.dtype
-                    hidden_states = hidden_states.to(torch.float32)
-                    variance = hidden_states.pow(2).mean(-1, keepdim=True)
-                    hidden_states = hidden_states * torch.rsqrt(variance + module.variance_epsilon)
-                    return module.weight.to(input_dtype) * hidden_states.to(input_dtype)
-
-                return forward
-
-            for module in llama_model.modules():
-                if module.__class__.__name__ in ["Embedding"]:
-                    # print("set", module.__class__.__name__, "to", target_dtype)
-                    module.to(target_dtype)
-                if module.__class__.__name__ in ["LlamaRMSNorm"]:
-                    # print("set", module.__class__.__name__, "hooks")
-                    module.forward = forward_hook(module)
-
-        prepare_fp8(text_encoder.model, org_dtype)
+    text_encoder_1.eval()
 
     logger.info(f"loading text encoder 2: {args.text_encoder2}")
-    text_encoder_2 = TextEncoder(
-        text_encoder_type=text_encoder_2_type,
-        max_length=text_len_2,
-        text_encoder_dtype=text_encoder_dtype,
-        text_encoder_path=args.text_encoder2,
-        tokenizer_type=text_encoder_2_type,
-        reproduce=reproduce,
-    )
+    text_encoder_2 = text_encoder.load_text_encoder_2(text_encoder_dir=args.text_encoder2, device="cpu")
     text_encoder_2.eval()
 
     # encode prompt
     logger.info(f"Encoding prompt with text encoder 1")
-    text_encoder.to(device=device)
+    text_encoder_1.to(device=device)
     if fp8_llm:
         with accelerator.autocast():
-            prompt_embeds, prompt_mask = encode_prompt(prompt, device, num_videos, text_encoder)
+            prompt_embeds, prompt_mask = encode_prompt(prompt, semantic_images, device, num_videos, text_encoder_1)
     else:
-        prompt_embeds, prompt_mask = encode_prompt(prompt, device, num_videos, text_encoder)
-    text_encoder = None
+        prompt_embeds, prompt_mask = encode_prompt(prompt, semantic_images, device, num_videos, text_encoder_1)
+    text_encoder_1 = None
     clean_memory_on_device(device)
 
     logger.info(f"Encoding prompt with text encoder 2")
     text_encoder_2.to(device=device)
-    prompt_embeds_2, prompt_mask_2 = encode_prompt(prompt, device, num_videos, text_encoder_2)
+    prompt_embeds_2, prompt_mask_2 = encode_prompt(prompt, semantic_images, device, num_videos, text_encoder_2)
 
     prompt_embeds = prompt_embeds.to("cpu")
     prompt_mask = prompt_mask.to("cpu")
@@ -412,8 +395,9 @@ def parse_args():
     )
     parser.add_argument("--vae", type=str, required=True, help="VAE checkpoint path or directory")
     parser.add_argument("--vae_dtype", type=str, default=None, help="data type for VAE, default is float16")
-    parser.add_argument("--text_encoder1", type=str, required=True, help="Text Encoder 1 directory")
-    parser.add_argument("--text_encoder2", type=str, required=True, help="Text Encoder 2 directory")
+    parser.add_argument("--text_encoder1", type=str, required=True, help="Text Encoder 1 path or directory")
+    parser.add_argument("--text_encoder2", type=str, required=True, help="Text Encoder 2 path or directory")
+    parser.add_argument("--clip_vision_path", type=str, default=None, help="CLIP vision model path for HunyuanVideo-I2V")
 
     # LoRA
     parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
@@ -444,8 +428,9 @@ def parse_args():
     parser.add_argument("--embedded_cfg_scale", type=float, default=6.0, help="Embeded classifier free guidance scale.")
     parser.add_argument("--video_path", type=str, default=None, help="path to video for video2video inference")
     parser.add_argument(
-        "--image_path", type=str, default=None, help="path to image for image2video inference, only works for SkyReels-I2V model"
+        "--image_path", type=str, default=None, help="path to image for image2video inference, only works for I2V model"
     )
+    parser.add_argument("--i2v_stability", action="store_true", help="use stability for HunyuanVideo-I2V model")
     parser.add_argument(
         "--split_uncond",
         action="store_true",
@@ -542,6 +527,24 @@ def main():
         mixed_precision = "bf16" if dit_dtype == torch.bfloat16 else "fp16"
         accelerator = accelerate.Accelerator(mixed_precision=mixed_precision)
 
+        # SkyReels-I2V or HunyuanVideo-I2V
+        i2v = args.image_path is not None
+        dit_in_channels = 16 if args.dit_in_channels is None else args.dit_in_channels
+        semantic_image: Image.Image = None
+        if i2v:
+            semantic_image = Image.open(args.image_path).convert("RGB")
+
+            sky_reels_i2v = dit_in_channels == 32
+            hunyuan_video_i2v = not sky_reels_i2v  # only supports "token_replace" mode for HunyuanVideo-I2V
+            if hunyuan_video_i2v:
+                image_embed_interleave = 4
+            else:
+                image_embed_interleave = None
+        else:
+            sky_reels_i2v = False
+            hunyuan_video_i2v = False
+            image_embed_interleave = None
+
         # load prompt
         prompt = args.prompt  # TODO load prompts from file
         assert prompt is not None, "prompt is required"
@@ -553,19 +556,21 @@ def main():
         logger.info(f"Encoding prompt: {prompt}")
 
         do_classifier_free_guidance = args.guidance_scale != 1.0
+        semantic_images = [semantic_image]  # for prompt
         if do_classifier_free_guidance:
             negative_prompt = args.negative_prompt
             if negative_prompt is None:
-                logger.info("Negative prompt is not provided, using empty prompt")
-                negative_prompt = ""
+                logger.info("Negative prompt is not provided, using default prompt")
             logger.info(f"Encoding negative prompt: {negative_prompt}")
             prompt = [negative_prompt, prompt]
+            # use black image for negative prompt
+            semantic_images = [Image.new("RGB", semantic_image.size, (0, 0, 0)), semantic_image]
         else:
             if args.negative_prompt is not None:
                 logger.warning("Negative prompt is provided but guidance_scale is 1.0, negative prompt will be ignored.")
 
         prompt_embeds, prompt_mask, prompt_embeds_2, prompt_mask_2 = encode_input_prompt(
-            prompt, args, device, args.fp8_llm, accelerator
+            hunyuan_video_i2v, prompt, semantic_images, image_embed_interleave, args, device, args.fp8_llm, accelerator
         )
 
         # encode latents for video2video inference
@@ -593,12 +598,11 @@ def main():
 
         # encode latents for image2video inference
         image_latents = None
-        if args.image_path is not None:
+        if i2v:
             # i2v inference
             logger.info(f"Image2Video inference: {args.image_path}")
 
-            image = Image.open(args.image_path)
-            image = resize_image_to_bucket(image, (width, height))  # returns a numpy array
+            image = resize_image_to_bucket(semantic_image, (width, height))  # returns a numpy array
             image = torch.from_numpy(image).permute(2, 0, 1).unsqueeze(0).unsqueeze(2).float()  # 1, C, 1, H, W
             image = image / 255.0
 
@@ -616,14 +620,17 @@ def main():
         if args.attn_mode == "sdpa":
             args.attn_mode = "torch"
 
-        # if image_latents is given, the model should be I2V model, so the in_channels should be 32
-        dit_in_channels = args.dit_in_channels if args.dit_in_channels is not None else (32 if image_latents is not None else 16)
-
         # if we use LoRA, weigths should be bf16 instead of fp8, because merging should be done in bf16
         # the model is too large, so we load the model to cpu. in addition, the .pt file is loaded to cpu anyway
         # on the fly merging will be a solution for this issue for .safetenors files (not implemented yet)
         transformer = load_transformer(
-            args.dit, args.attn_mode, args.split_attn, loading_device, dit_dtype, in_channels=dit_in_channels
+            args.dit,
+            args.attn_mode,
+            args.split_attn,
+            loading_device,
+            dit_dtype,
+            in_channels=dit_in_channels,
+            i2v_mode=hunyuan_video_i2v,
         )
         transformer.eval()
 
@@ -744,11 +751,15 @@ def main():
             latents.append(randn_tensor(shape_of_frame, generator=generator, device=device, dtype=dit_dtype))
         latents = torch.cat(latents, dim=2)
 
-        # pad image_latents to match the length of video_latents
-        if image_latents is not None:
+        if sky_reels_i2v:
+            # pad image_latents to match the length of video_latents
             zero_latents = torch.zeros_like(latents)
             zero_latents[:, :, :1, :, :] = image_latents
             image_latents = zero_latents
+        elif hunyuan_video_i2v:
+            if args.i2v_stability:
+                t = torch.tensor([0.999]).to(device=device)
+                latents = latents * t + image_latents.repeat(1, 1, latent_video_length, 1, 1) * (1 - t)
 
         if args.video_path is not None:
             # v2v inference
@@ -794,6 +805,8 @@ def main():
             logger.warning("split_attn is enabled, split_uncond will be enabled as well.")
             args.split_uncond = True
 
+        # we do not support "latent_concat" mode for HunyuanVideo-I2V model, only "token_replace" mode is supported
+
         # with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CPU, torch.profiler.ProfilerActivity.CUDA]) as p:
         with tqdm(total=num_inference_steps) as progress_bar:
             for i, t in enumerate(timesteps):
@@ -801,8 +814,11 @@ def main():
 
                 # predict the noise residual
                 with torch.no_grad(), accelerator.autocast():
+                    if hunyuan_video_i2v:  # and i2v_condition_type == "token_replace":
+                        latents = torch.cat([image_latents, latents[:, :, 1:, :, :]], dim=2)
+
                     latents_input = latents if not do_classifier_free_guidance else torch.cat([latents, latents], dim=0)
-                    if image_latents is not None:
+                    if sky_reels_i2v:
                         latents_image_input = (
                             image_latents if not do_classifier_free_guidance else torch.cat([image_latents, image_latents], dim=0)
                         )
@@ -841,7 +857,12 @@ def main():
                     #     )
 
                 # compute the previous noisy sample x_t -> x_t-1
-                latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                # generator and eta arguments are not used in FlowMatchDiscreteScheduler
+                if not hunyuan_video_i2v:
+                    latents = scheduler.step(noise_pred, t, latents, return_dict=False)[0]
+                else:
+                    latents = scheduler.step(noise_pred[:, :, 1:, :, :], t, latents[:, :, 1:, :, :], return_dict=False)[0]
+                    latents = torch.concat([image_latents, latents], dim=2)
 
                 # update progress bar
                 if i == len(timesteps) - 1 or ((i + 1) > num_warmup_steps and (i + 1) % scheduler.order == 0):
