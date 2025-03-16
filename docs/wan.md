@@ -33,9 +33,24 @@ Download the VAE from the above page `Wan2.1_VAE.pth` or download `split_files/v
 
 Download the DiT weights from the following page: https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/tree/main/split_files/diffusion_models
 
-Please select the appropriate weights according to T2V, I2V, resolution, model size, etc. fp8 models can be used if `--fp8` is specified.
+Please select the appropriate weights according to T2V, I2V, resolution, model size, etc. 
+
+`fp16` and `bf16` models can be used, and `fp8_e4m3fn` models can be used if `--fp8` (or `--fp8_base`) is specified without specifying `--fp8_scaled`. **Please note that `fp8_scaled` models are not supported even with `--fp8_scaled`.**
 
 (Thanks to Comfy-Org for providing the repackaged weights.)
+
+### Model support matrix / モデルサポートマトリックス
+
+* columns: training dtype (行：学習時のデータ型)
+* rows: model dtype (列：モデルのデータ型)
+
+| model \ training |bf16|fp16|--fp8_base|--fp8base & --fp8_scaled|
+|--|--|--|--|--|
+|bf16|✓|--|✓|✓|
+|fp16|--|✓|✓|✓|
+|fp8_e4m3fn|--|--|✓|--|
+|fp8_scaled|--|--|--|--|
+
 <details>
 <summary>日本語</summary>
 T5 `models_t5_umt5-xxl-enc-bf16.pth` およびCLIP `models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth` を、次のページからダウンロードしてください：https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-720P/tree/main
@@ -44,7 +59,9 @@ VAEは上のページから `Wan2.1_VAE.pth` をダウンロードするか、�
 
 DiTの重みを次のページからダウンロードしてください：https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged/tree/main/split_files/diffusion_models
 
-T2VやI2V、解像度、モデルサイズなどにより適切な重みを選択してください。`--fp8`指定時はfp8モデルも使用できます。
+T2VやI2V、解像度、モデルサイズなどにより適切な重みを選択してください。
+
+`fp16` および `bf16` モデルを使用できます。また、`--fp8` （または`--fp8_base`）を指定し`--fp8_scaled`を指定をしないときには `fp8_e4m3fn` モデルを使用できます。**`fp8_scaled` モデルはいずれの場合もサポートされていませんのでご注意ください。**
 
 （repackaged版の重みを提供してくださっているComfy-Orgに感謝いたします。）
 </details>
@@ -166,6 +183,17 @@ I2Vモデルを学習する場合は、`--clip path/to/models_clip_open-clip-xlm
 
 ## Inference / 推論
 
+### Inference Options Comparison / 推論オプション比較
+
+#### Speed Comparison (Faster → Slower) / 速度比較（速い→遅い）
+*Note: Results may vary depending on GPU type*
+
+fp8_fast > bf16/fp16 (no block swap) > fp8 > fp8_scaled > bf16/fp16 (block swap)
+
+#### Quality Comparison (Higher → Lower) / 品質比較（高→低）
+
+bf16/fp16 > fp8_scaled > fp8 >> fp8_fast
+
 ### T2V Inference / T2V推論
 
 The following is an example of T2V inference (input as a single line):
@@ -182,17 +210,25 @@ python wan_generate_video.py --fp8 --task t2v-1.3B --video_size  832 480 --video
 
 `--attn_mode` is `torch`, `sdpa` (same as `torch`), `xformers`, `sageattn`,`flash2`, `flash` (same as `flash2`) or `flash3`. `torch` is the default. Other options require the corresponding library to be installed. `flash3` (Flash attention 3) is not tested.
 
+Specifying `--fp8` runs DiT in fp8 mode. fp8 can significantly reduce memory consumption but may impact output quality.
+
+`--fp8_scaled` can be specified in addition to `--fp8` to run the model in fp8 weights optimization. This increases memory consumption and speed slightly but improves output quality. See [here](advanced_config.md#fp8-weight-optimization-for-models--モデルの重みのfp8への最適化) for details.
+
+`--fp8_fast` option is also available for faster inference on RTX 40x0 GPUs. This option requires `--fp8_scaled` option. **This option seems to degrade the output quality.**
+
 `--fp8_t5` can be used to specify the T5 model in fp8 format. This option reduces memory usage for the T5 model.  
 
 `--negative_prompt` can be used to specify a negative prompt. If omitted, the default negative prompt is used.
 
-` --flow_shift` can be used to specify the flow shift (default 3.0 for I2V with 480p, 5.0 for others).
+`--flow_shift` can be used to specify the flow shift (default 3.0 for I2V with 480p, 5.0 for others).
 
-`--guidance_scale` can be used to specify the guidance scale for classifier free guiance (default 5.0).
+`--guidance_scale` can be used to specify the guidance scale for classifier free guidance (default 5.0).
 
 `--blocks_to_swap` is the number of blocks to swap during inference. The default value is None (no block swap). The maximum value is 39 for 14B model and 29 for 1.3B model.
 
 `--vae_cache_cpu` enables VAE cache in main memory. This reduces VRAM usage slightly but processing is slower.
+
+`--compile` enables torch.compile. See [here](/README.md#inference) for details.
 
 Other options are same as `hv_generate_video.py` (some options are not supported, please check the help).
 
@@ -201,6 +237,12 @@ Other options are same as `hv_generate_video.py` (some options are not supported
 `--task` には `t2v-1.3B`, `t2v-14B`, `i2v-14B`, `t2i-14B` のいずれかを指定します。
 
 `--attn_mode` には `torch`, `sdpa`（`torch`と同じ）、`xformers`, `sageattn`, `flash2`, `flash`（`flash2`と同じ）, `flash3` のいずれかを指定します。デフォルトは `torch` です。その他のオプションを使用する場合は、対応するライブラリをインストールする必要があります。`flash3`（Flash attention 3）は未テストです。
+
+`--fp8` を指定するとDiTモデルをfp8形式で実行します。fp8はメモリ消費を大幅に削減できますが、出力品質に影響を与える可能性があります。
+    
+`--fp8_scaled` を `--fp8` と併用すると、fp8への重み量子化を行います。メモリ消費と速度はわずかに悪化しますが、出力品質が向上します。詳しくは[こちら](advanced_config.md#fp8-weight-optimization-for-models--モデルの重みのfp8への最適化)を参照してください。
+
+`--fp8_fast` オプションはRTX 40x0 GPUでの高速推論に使用されるオプションです。このオプションは `--fp8_scaled` オプションが必要です。**出力品質が劣化するようです。**
 
 `--fp8_t5` を指定するとT5モデルをfp8形式で実行します。T5モデル呼び出し時のメモリ使用量を削減します。
 
@@ -213,6 +255,8 @@ Other options are same as `hv_generate_video.py` (some options are not supported
 `--blocks_to_swap` は推論時のblock swapの数です。デフォルト値はNone（block swapなし）です。最大値は14Bモデルの場合39、1.3Bモデルの場合29です。
 
 `--vae_cache_cpu` を有効にすると、VAEのキャッシュをメインメモリに保持します。VRAM使用量が多少減りますが、処理は遅くなります。
+
+`--compile`でtorch.compileを有効にします。詳細については[こちら](/README.md#inference)を参照してください。
 
 その他のオプションは `hv_generate_video.py` と同じです（一部のオプションはサポートされていないため、ヘルプを確認してください）。
 </details>
