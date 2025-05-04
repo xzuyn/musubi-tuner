@@ -1,6 +1,7 @@
 import argparse
 from datetime import datetime
 import gc
+import glob
 import json
 import random
 import os
@@ -20,10 +21,15 @@ import torchvision.transforms.functional as TF
 from transformers import LlamaModel
 from tqdm import tqdm
 
+from modules.fp8_optimization_utils import apply_fp8_monkey_patch
 from networks import lora_framepack
 from hunyuan_model.autoencoder_kl_causal_3d import AutoencoderKLCausal3D
 from frame_pack import hunyuan
-from frame_pack.hunyuan_video_packed import HunyuanVideoTransformer3DModelPacked, load_packed_model
+from frame_pack.hunyuan_video_packed import (
+    HunyuanVideoTransformer3DModelPacked,
+    load_packed_model,
+    create_hunyuan_video_transformer_3d_model,
+)
 from frame_pack.utils import crop_or_pad_yield_mask, resize_and_center_crop, soft_append_bcthw
 from frame_pack.bucket_tools import find_nearest_bucket
 from frame_pack.clip_vision import hf_clip_vision_encode
@@ -39,6 +45,7 @@ from utils.device_utils import clean_memory_on_device
 from hv_generate_video import save_images_grid, save_videos_grid, synchronize_device
 from wan_generate_video import merge_lora_weights
 from frame_pack.framepack_utils import load_vae, load_text_encoder1, load_text_encoder2, load_image_encoders
+from networks.framepack_lora_inf_utils import merge_lora_to_state_dict
 from dataset.image_video_dataset import load_video
 
 import logging
@@ -72,7 +79,10 @@ def parse_args() -> argparse.Namespace:
 
     # LoRA
     parser.add_argument("--lora_weight", type=str, nargs="*", required=False, default=None, help="LoRA weight path")
-    parser.add_argument("--lora_multiplier", type=float, nargs="*", default=1.0, help="LoRA multiplier")
+    parser.add_argument("--lora_multiplier", type=float, nargs="*", default=None, help="LoRA multiplier")
+    parser.add_argument(
+        "--on_the_fly_lora", action="store_true", help="Use on-the-fly LoRA merging, reduces memory usage, experimental"
+    )
     parser.add_argument("--include_patterns", type=str, nargs="*", default=None, help="LoRA module include patterns")
     parser.add_argument("--exclude_patterns", type=str, nargs="*", default=None, help="LoRA module exclude patterns")
     parser.add_argument(
@@ -721,17 +731,54 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
         height, width, video_seconds, context, context_null, context_img, end_latent = prepare_i2v_inputs(args, device, vae)
 
         # load DiT model
-        model = load_dit_model(args, device)
+        if not args.on_the_fly_lora:
+            model = load_dit_model(args, device)
 
-        # merge LoRA weights
-        if args.lora_weight is not None and len(args.lora_weight) > 0:
-            merge_lora_weights(lora_framepack, model, args, device)  # ugly hack to common merge_lora_weights function
-            # if we only want to save the model, we can skip the rest
-            if args.save_merged_model:
-                return None, None
+            # merge LoRA weights
+            if args.lora_weight is not None and len(args.lora_weight) > 0:
+                merge_lora_weights(lora_framepack, model, args, device)  # ugly hack to common merge_lora_weights function
+                # if we only want to save the model, we can skip the rest
+                if args.save_merged_model:
+                    return None, None
 
-        # optimize model: fp8 conversion, block swap etc.
-        optimize_model(model, args, device)
+            # optimize model: fp8 conversion, block swap etc.
+            optimize_model(model, args, device)
+        else:
+            # TODO refactor this part to use the same code as everywhere else
+
+            model = create_hunyuan_video_transformer_3d_model(args.attn_mode, split_attn=True)
+
+            dit_path = args.dit
+            if os.path.isdir(dit_path):
+                safetensor_files = glob.glob(os.path.join(dit_path, "*.safetensors"))
+                if len(safetensor_files) == 0:
+                    raise ValueError(f"Cannot find safetensors file in {dit_path}")
+                # sort by name and take the first one
+                safetensor_files.sort()
+                dit_path = safetensor_files[0]
+
+            logger.info(f"Loading model from {dit_path}")
+            move_to_device = args.blocks_to_swap == 0  # if blocks_to_swap > 0, we will keep the model on CPU
+            state_dict = merge_lora_to_state_dict(
+                dit_path, args.lora_weight, args.lora_multiplier, args.fp8_scaled, device, move_to_device
+            )
+
+            if args.fp8_scaled:
+                # apply monkey patching
+                apply_fp8_monkey_patch(model, state_dict, use_scaled_mm=False)
+
+            info = model.load_state_dict(state_dict, strict=True, assign=True)
+            logger.info(f"Loaded DiT model weights: {info}")
+
+            if args.fp8 and not args.fp8_scaled:
+                model.to(dtype=torch.float8e4m3fn)
+            if args.blocks_to_swap > 0:
+                logger.info(f"Enable swap {args.blocks_to_swap} blocks to CPU from device: {device}")
+                model.enable_block_swap(args.blocks_to_swap, device, supports_backward=False)
+                model.move_to_device_except_swap_blocks(device)
+                model.prepare_block_swap_before_forward()
+            else:
+                model.to(device)  # make sure all parameters are on the right device (e.g. RoPE etc.)
 
     # sampling
     latent_window_size = args.latent_window_size  # default is 9

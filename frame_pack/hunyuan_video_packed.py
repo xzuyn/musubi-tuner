@@ -1944,27 +1944,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
         return state_dict
 
 
-def load_packed_model(
-    device: Union[str, torch.device],
-    dit_path: str,
-    attn_mode: str,
-    loading_device: Union[str, torch.device],
-    fp8_scaled: bool = False,
-    split_attn: bool = False,
-) -> HunyuanVideoTransformer3DModelPacked:
-    # TODO support split_attn
-    device = torch.device(device)
-    loading_device = torch.device(loading_device)
-
-    if os.path.isdir(dit_path):
-        # we don't support from_pretrained for now, so loading safetensors directly
-        safetensor_files = glob.glob(os.path.join(dit_path, "*.safetensors"))
-        if len(safetensor_files) == 0:
-            raise ValueError(f"Cannot find safetensors file in {dit_path}")
-        # sort by name and take the first one
-        safetensor_files.sort()
-        dit_path = safetensor_files[0]
-
+def create_hunyuan_video_transformer_3d_model(attn_mode: str, split_attn: bool = False) -> HunyuanVideoTransformer3DModelPacked:
     with init_empty_weights():
         logger.info(f"Creating HunyuanVideoTransformer3DModelPacked")
         model = HunyuanVideoTransformer3DModelPacked(
@@ -1990,6 +1970,31 @@ def load_packed_model(
             attn_mode=attn_mode,
             split_attn=split_attn,
         )
+        return model
+
+
+def load_packed_model(
+    device: Union[str, torch.device],
+    dit_path: str,
+    attn_mode: str,
+    loading_device: Union[str, torch.device],
+    fp8_scaled: bool = False,
+    split_attn: bool = False,
+) -> HunyuanVideoTransformer3DModelPacked:
+    # TODO support split_attn
+    device = torch.device(device)
+    loading_device = torch.device(loading_device)
+
+    if os.path.isdir(dit_path):
+        # we don't support from_pretrained for now, so loading safetensors directly
+        safetensor_files = glob.glob(os.path.join(dit_path, "*.safetensors"))
+        if len(safetensor_files) == 0:
+            raise ValueError(f"Cannot find safetensors file in {dit_path}")
+        # sort by name and take the first one
+        safetensor_files.sort()
+        dit_path = safetensor_files[0]
+
+    model = create_hunyuan_video_transformer_3d_model(attn_mode, split_attn=split_attn)
 
     # if fp8_scaled, load model weights to CPU to reduce VRAM usage. Otherwise, load to the specified device (CPU for block swap or CUDA for others)
     dit_loading_device = torch.device("cpu") if fp8_scaled else loading_device
