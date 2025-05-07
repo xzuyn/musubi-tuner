@@ -896,6 +896,13 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
         clip_l_pooler_n = context_null["clip_l_pooler"].to(device, dtype=torch.bfloat16)
 
         # call DiT model to generate latents
+
+        # test: create only one frame
+        print("Use last latent indices (= latent_window_size) for generation")
+        latent_indices = latent_indices[:, -1:]
+        print(f"latent_indices: {latent_indices}")
+        num_frames = 1
+
         generated_latents = sample_hunyuan(
             transformer=model,
             sampler=args.sample_solver,
@@ -941,6 +948,8 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
             history_latents = torch.cat([history_latents, generated_latents.to(history_latents)], dim=2)
             real_history_latents = history_latents[:, :, -total_generated_latent_frames:, :, :]
 
+        # use last frame (remove first frame) for 1 pixel frame generation
+        real_history_latents = real_history_latents[:, :, -1:, :, :]
         logger.info(f"Generated. Latent shape {real_history_latents.shape}")
 
         # # TODO support saving intermediate video
