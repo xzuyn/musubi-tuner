@@ -400,6 +400,7 @@ def decode_latent(
 
     vae.to(device)
     if not bulk_decode:
+        logger.warning("Please use `--bulk_decode` for image generation.")
         latent_window_size = latent_window_size  # default is 9
         # total_latent_sections = (args.video_seconds * 30) / (latent_window_size * 4)
         # total_latent_sections = int(max(round(total_latent_sections), 1))
@@ -430,8 +431,10 @@ def decode_latent(
             clean_memory_on_device(device)
     else:
         # bulk decode
-        logger.info(f"Bulk decoding")
-        history_pixels = hunyuan.vae_decode(latent, vae).cpu()
+        logger.info(f"Bulk decoding with single frame decode")
+        # history_pixels = hunyuan.vae_decode(latent, vae).cpu()
+        history_pixels = [hunyuan.vae_decode(latent[:, :, i : i + 1, :, :], vae).cpu() for i in range(latent.shape[2])]
+        history_pixels = torch.cat(history_pixels, dim=2)  # concatenate along the time dimension
     vae.to("cpu")
 
     logger.info(f"Decoded. Pixel shape {history_pixels.shape}")
@@ -899,9 +902,25 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
 
         # test: create only one frame
         print("Use last latent indices (= latent_window_size) for generation")
+        # # if not f1_mode:
         latent_indices = latent_indices[:, -1:]
+        # # else:
+        # #     latent_indices = latent_indices[:, 0:1]  # the last index seems to be too large for F1 mode
+
+        # latent_indices = torch.tensor([[latent_window_size * l for l in range(1, 5)]], device=device, dtype=torch.int64)
+
         print(f"latent_indices: {latent_indices}")
-        num_frames = 1
+        num_frames = (latent_indices.shape[1] - 1) * 4 + 1  # number of frames to generate
+
+        print(f"remove 2x and 4x indices, clean_latents")
+        clean_latents_2x = None
+        clean_latents_4x = None
+        clean_latent_2x_indices = None
+        clean_latent_4x_indices = None
+
+        # print(f"remove clean_latents 1x")
+        # clean_latents = clean_latents[:, :, :1, :, :]
+        # clean_latent_indices = clean_latent_indices[:, :1]
 
         generated_latents = sample_hunyuan(
             transformer=model,
@@ -948,8 +967,8 @@ def generate(args: argparse.Namespace, gen_settings: GenerationSettings, shared_
             history_latents = torch.cat([history_latents, generated_latents.to(history_latents)], dim=2)
             real_history_latents = history_latents[:, :, -total_generated_latent_frames:, :, :]
 
-        # use last frame (remove first frame) for 1 pixel frame generation
-        real_history_latents = real_history_latents[:, :, -1:, :, :]
+        # remove first frame for 1 pixel frame generation
+        real_history_latents = real_history_latents[:, :, 1:, :, :]
         logger.info(f"Generated. Latent shape {real_history_latents.shape}")
 
         # # TODO support saving intermediate video
