@@ -1130,14 +1130,15 @@ class HunyuanVideoRotaryPosEmbed(nn.Module):
         self.theta = theta
 
     @torch.no_grad()
-    def get_frequency(self, dim, pos):
+    def get_frequency(self, dim, pos, scale=1.0):
         T, H, W = pos.shape
         freqs = 1.0 / (self.theta ** (torch.arange(0, dim, 2, dtype=torch.float32, device=pos.device)[: (dim // 2)] / dim))
         freqs = torch.outer(freqs, pos.reshape(-1)).unflatten(-1, (T, H, W)).repeat_interleave(2, dim=0)
+        freqs = freqs * scale
         return freqs.cos(), freqs.sin()
 
     @torch.no_grad()
-    def forward_inner(self, frame_indices, height, width, device):
+    def forward_inner(self, frame_indices, height, width, device, scale=1.0):
         GT, GY, GX = torch.meshgrid(
             frame_indices.to(device=device, dtype=torch.float32),
             torch.arange(0, height, device=device, dtype=torch.float32),
@@ -1147,9 +1148,9 @@ class HunyuanVideoRotaryPosEmbed(nn.Module):
 
         FCT, FST = self.get_frequency(self.DT, GT)
         del GT  # free memory
-        FCY, FSY = self.get_frequency(self.DY, GY)
+        FCY, FSY = self.get_frequency(self.DY, GY, scale)
         del GY  # free memory
-        FCX, FSX = self.get_frequency(self.DX, GX)
+        FCX, FSX = self.get_frequency(self.DX, GX, scale)
         del GX  # free memory
 
         result = torch.cat([FCT, FCY, FCX, FST, FSY, FSX], dim=0)
@@ -1159,9 +1160,9 @@ class HunyuanVideoRotaryPosEmbed(nn.Module):
         return result  # Shape (2 * total_dim / 2, T, H, W) -> (total_dim, T, H, W)
 
     @torch.no_grad()
-    def forward(self, frame_indices, height, width, device):
+    def forward(self, frame_indices, height, width, device, scale=1.0):
         frame_indices = frame_indices.unbind(0)
-        results = [self.forward_inner(f, height, width, device) for f in frame_indices]
+        results = [self.forward_inner(f, height, width, device, scale) for f in frame_indices]
         results = torch.stack(results, dim=0)
         return results
 
@@ -1675,7 +1676,10 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
         clean_latent_2x_indices=None,
         clean_latents_4x=None,
         clean_latent_4x_indices=None,
+        scaling=False,
     ):
+        scale = 1.0 if not scaling else 1.0 / 2.0
+        print(f"scale: {scale}")
         hidden_states = self.gradient_checkpointing_method(self.x_embedder.proj, latents)
         B, C, T, H, W = hidden_states.shape
 
@@ -1684,7 +1688,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
 
         hidden_states = hidden_states.flatten(2).transpose(1, 2)
 
-        rope_freqs = self.rope(frame_indices=latent_indices, height=H, width=W, device=hidden_states.device)
+        rope_freqs = self.rope(frame_indices=latent_indices, height=H, width=W, device=hidden_states.device, scale=scale)
         rope_freqs = rope_freqs.flatten(2).transpose(1, 2)
 
         if clean_latents is not None and clean_latent_indices is not None:
@@ -1692,7 +1696,9 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
             clean_latents = self.gradient_checkpointing_method(self.clean_x_embedder.proj, clean_latents)
             clean_latents = clean_latents.flatten(2).transpose(1, 2)
 
-            clean_latent_rope_freqs = self.rope(frame_indices=clean_latent_indices, height=H, width=W, device=clean_latents.device)
+            clean_latent_rope_freqs = self.rope(
+                frame_indices=clean_latent_indices, height=H, width=W, device=clean_latents.device, scale=scale
+            )
             clean_latent_rope_freqs = clean_latent_rope_freqs.flatten(2).transpose(1, 2)
 
             hidden_states = torch.cat([clean_latents, hidden_states], dim=1)
@@ -1705,7 +1711,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
             clean_latents_2x = clean_latents_2x.flatten(2).transpose(1, 2)
 
             clean_latent_2x_rope_freqs = self.rope(
-                frame_indices=clean_latent_2x_indices, height=H, width=W, device=clean_latents_2x.device
+                frame_indices=clean_latent_2x_indices, height=H, width=W, device=clean_latents_2x.device, scale=scale
             )
             clean_latent_2x_rope_freqs = pad_for_3d_conv(clean_latent_2x_rope_freqs, (2, 2, 2))
             clean_latent_2x_rope_freqs = center_down_sample_3d(clean_latent_2x_rope_freqs, (2, 2, 2))
@@ -1721,7 +1727,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
             clean_latents_4x = clean_latents_4x.flatten(2).transpose(1, 2)
 
             clean_latent_4x_rope_freqs = self.rope(
-                frame_indices=clean_latent_4x_indices, height=H, width=W, device=clean_latents_4x.device
+                frame_indices=clean_latent_4x_indices, height=H, width=W, device=clean_latents_4x.device, scale=scale
             )
             clean_latent_4x_rope_freqs = pad_for_3d_conv(clean_latent_4x_rope_freqs, (4, 4, 4))
             clean_latent_4x_rope_freqs = center_down_sample_3d(clean_latent_4x_rope_freqs, (4, 4, 4))
@@ -1762,6 +1768,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
         post_patch_width = width // p
         original_context_length = post_patch_num_frames * post_patch_height * post_patch_width
 
+        print(timestep)
         hidden_states, rope_freqs = self.process_input_hidden_states(
             hidden_states,
             latent_indices,
@@ -1771,6 +1778,7 @@ class HunyuanVideoTransformer3DModelPacked(nn.Module):  # (PreTrainedModelMixin,
             clean_latent_2x_indices,
             clean_latents_4x,
             clean_latent_4x_indices,
+            scaling=timestep > 950,
         )
         del (
             latent_indices,
