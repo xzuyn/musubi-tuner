@@ -442,7 +442,7 @@ class NetworkTrainer:
         return logs
 
     def get_optimizer(self, args, trainable_params: list[torch.nn.Parameter]) -> tuple[str, str, torch.optim.Optimizer]:
-        # adamw, adamw8bit, adafactor
+        # adamw, adamw8bit, adafactor, came
 
         optimizer_type = args.optimizer_type.lower()
 
@@ -508,6 +508,24 @@ class NetworkTrainer:
             logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
             optimizer_class = torch.optim.AdamW
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
+
+        elif optimizer_type == "CAME".lower():
+            try:
+                from came_pytorch import CAME
+            except ImportError:
+                raise ImportError("No came_pytorch / came_pytorchがインストールされていないようです")
+
+            logger.info(f"use CAME optimizer | {optimizer_kwargs}")
+            optimizer_class = CAME
+            optimizer = optimizer_class(
+                trainable_params,
+                lr=lr,
+                weight_decay=0.01,
+                enable_stochastic_rounding=True,
+                enable_cautious=True,
+                enable_8bit=True,
+                **optimizer_kwargs,
+            )
 
         if optimizer is None:
             # 任意のoptimizerを使う
@@ -962,6 +980,53 @@ class NetworkTrainer:
             noisy_model_input = (1 - t) * latents + t * noise
 
             timesteps += 1  # 1 to 1000
+        elif args.timestep_sampling.startswith("kl_optimal"):
+            # Sigmas from ComfyUI, 1.0 sigma lowered to 0.99999
+            kl_optimal_dict = {
+                "kl_optimal_4": [
+                    0.99999, 0.57749, 0.26817, 0.00031575,
+                ],
+                "kl_optimal_8": [
+                    0.99999, 0.79755, 0.62847, 0.48174,
+                    0.35012, 0.22848, 0.11295, 0.00031575,
+                ],
+                "kl_optimal_16": [
+                    0.99999, 0.90044, 0.80985, 0.72664,
+                    0.64953, 0.57749, 0.50968, 0.44541,
+                    0.38406, 0.32513, 0.26817, 0.21280,
+                    0.15864, 0.10538, 0.052703, 0.00031575,
+                ],
+                "kl_optimal_32": [
+                    0.99999, 0.95059, 0.9035, 0.85852,
+                    0.81546, 0.77414, 0.73441, 0.69613,
+                    0.65917, 0.62343, 0.5888, 0.55519,
+                    0.52251, 0.49069, 0.45964, 0.42931,
+                    0.39964, 0.37056, 0.34202, 0.31396,
+                    0.28636, 0.25915, 0.23229, 0.20575,
+                    0.17948, 0.15345, 0.12763, 0.10197,
+                    0.07644, 0.05101, 0.025647, 0.00031575,
+                ],
+            }
+            kl_optimal_dict["kl_optimal_multi"] = (
+                kl_optimal_dict["kl_optimal_4"]
+                + kl_optimal_dict["kl_optimal_8"]
+                + kl_optimal_dict["kl_optimal_16"]
+                + kl_optimal_dict["kl_optimal_32"]
+            )
+
+            allowed_timesteps = torch.tensor(
+                kl_optimal_dict[args.timestep_sampling],
+                device=device,
+                dtype=torch.float32,
+            )
+
+            t = allowed_timesteps[torch.randint(0, len(allowed_timesteps), (batch_size,))]
+
+            timesteps = t * 1000.0
+
+            t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
+
+            noisy_model_input = (1 - t) * latents + t * noise
         else:
             # Sample a random timestep for each image
             # for weighting schemes where we sample timesteps non-uniformly
@@ -2571,7 +2636,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "kl_optimal_4", "kl_optimal_8", "kl_optimal_16", "kl_optimal_32", "kl_optimal_multi"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
