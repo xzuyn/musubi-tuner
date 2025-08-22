@@ -1032,16 +1032,14 @@ class NetworkTrainer:
                     0.064493, 0.048420, 0.032371, 0.016339, 0.00031575
                 ],
             }
-            kl_optimal_dict["kl_optimal_multi"] = list(
-                set(
-                    kl_optimal_dict["kl_optimal_4"]
-                    + kl_optimal_dict["kl_optimal_8"]
-                    + kl_optimal_dict["kl_optimal_16"]
-                    + kl_optimal_dict["kl_optimal_20"]
-                    + kl_optimal_dict["kl_optimal_25"]
-                    + kl_optimal_dict["kl_optimal_32"]
-                    + kl_optimal_dict["kl_optimal_50"]
-                )
+            kl_optimal_dict["kl_optimal_multi"] = (
+                kl_optimal_dict["kl_optimal_4"]
+                + kl_optimal_dict["kl_optimal_8"]
+                + kl_optimal_dict["kl_optimal_16"]
+                + kl_optimal_dict["kl_optimal_20"]
+                + kl_optimal_dict["kl_optimal_25"]
+                + kl_optimal_dict["kl_optimal_32"]
+                + kl_optimal_dict["kl_optimal_50"]
             )
 
             allowed_timesteps = torch.tensor(
