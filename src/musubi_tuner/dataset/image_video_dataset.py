@@ -10,7 +10,6 @@ from typing import Any, Optional, Sequence, Tuple, Union
 import numpy as np
 import torch
 from safetensors.torch import save_file, load_file
-from safetensors import safe_open
 from PIL import Image
 import cv2
 import av
@@ -27,7 +26,6 @@ logging.basicConfig(level=logging.INFO)
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
 
 try:
-    import pillow_avif
 
     IMAGE_EXTENSIONS.extend([".avif", ".AVIF"])
 except:
@@ -35,7 +33,6 @@ except:
 
 # JPEG-XL on Linux
 try:
-    from jxlpy import JXLImagePlugin
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
@@ -43,7 +40,6 @@ except:
 
 # JPEG-XL on Windows
 try:
-    import pillow_jxl
 
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
 except:
@@ -370,7 +366,7 @@ def save_text_encoder_output_cache_framepack(
     sd = {}
     dtype_str = dtype_to_str(llama_vec.dtype)
     sd[f"llama_vec_{dtype_str}"] = llama_vec.detach().cpu()
-    sd[f"llama_attention_mask"] = llama_attention_mask.detach().cpu()
+    sd["llama_attention_mask"] = llama_attention_mask.detach().cpu()
     dtype_str = dtype_to_str(clip_l_pooler.dtype)
     sd[f"clip_l_pooler_{dtype_str}"] = clip_l_pooler.detach().cpu()
 

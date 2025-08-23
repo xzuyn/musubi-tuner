@@ -1,12 +1,8 @@
 import argparse
-from datetime import datetime
 import gc
-import json
 import random
 import os
-import re
 import time
-import math
 import copy
 from typing import Tuple, Optional, List, Any, Dict
 
@@ -15,17 +11,15 @@ import torch
 from safetensors.torch import load_file, save_file
 from safetensors import safe_open
 from tqdm import tqdm
-from PIL import Image
 
 from musubi_tuner.qwen_image import qwen_image_model, qwen_image_utils
 from musubi_tuner.qwen_image.qwen_image_autoencoder_kl import AutoencoderKLQwenImage
 from musubi_tuner.qwen_image.qwen_image_utils import VAE_SCALE_FACTOR
-from musubi_tuner.utils import image_utils
 from musubi_tuner.utils.lora_utils import filter_lora_state_dict
 
 
 try:
-    from lycoris.kohya import create_network_from_weights
+    pass
 except:
     pass
 
@@ -373,7 +367,7 @@ def prepare_image_inputs(
         )
 
         # VAE encoding
-        logger.info(f"Encoding control image to latent space with VAE")
+        logger.info("Encoding control image to latent space with VAE")
         vae_original_device = vae.device
         vae.to(device)
 

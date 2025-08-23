@@ -2,7 +2,6 @@ import argparse
 import os
 from typing import Optional, Union
 
-import numpy as np
 import torch
 from tqdm import tqdm
 
@@ -105,7 +104,7 @@ def process_text_encoder_batches(
             # skip existing cache files
             if skip_existing:
                 filtered_batch = [
-                    item for item in batch if not os.path.normpath(item.text_encoder_output_cache_path) in all_cache_files
+                    item for item in batch if os.path.normpath(item.text_encoder_output_cache_path) not in all_cache_files
                 ]
                 # print(f"Filtered {len(batch) - len(filtered_batch)} existing cache files")
                 if len(filtered_batch) == 0:

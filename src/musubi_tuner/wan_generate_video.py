@@ -1,5 +1,4 @@
 import argparse
-from datetime import datetime
 import gc
 import random
 import os
@@ -7,7 +6,7 @@ import re
 import time
 import math
 import copy
-from types import ModuleType, SimpleNamespace
+from types import ModuleType
 from typing import Tuple, Optional, List, Union, Any, Dict
 
 import torch
@@ -24,9 +23,8 @@ from tqdm import tqdm
 from musubi_tuner.dataset import image_video_dataset
 from musubi_tuner.networks import lora_wan
 from musubi_tuner.utils.lora_utils import filter_lora_state_dict
-from musubi_tuner.utils.safetensors_utils import mem_eff_save_file, load_safetensors
+from musubi_tuner.utils.safetensors_utils import mem_eff_save_file
 from musubi_tuner.wan.configs import WAN_CONFIGS, SUPPORTED_SIZES
-import musubi_tuner.wan as wan
 from musubi_tuner.wan.modules.model import WanModel, load_wan_model, detect_wan_sd_dtype
 from musubi_tuner.wan.modules.vae import WanVAE
 from musubi_tuner.wan.modules.t5 import T5EncoderModel
@@ -555,14 +553,14 @@ def load_dit_models(
     """
     use_high_model = args.dit_high_noise is not None and len(args.dit_high_noise) > 0
     if use_high_model and args.lazy_loading:
-        logger.info(f"Using lazy loading")
+        logger.info("Using lazy loading")
         return [None, None]  # lazy loading will load models on demand
 
     model = load_dit_model(args, args.dit, args.lora_weight, args.lora_multiplier, config, device, dit_weight_dtype)
 
     if use_high_model:
         if args.offload_inactive_dit:
-            logger.warning(f"Offloading low noise DiT model to CPU, high noise DiT will be loaded on GPU")
+            logger.warning("Offloading low noise DiT model to CPU, high noise DiT will be loaded on GPU")
             model.to("cpu")
 
         logger.info(f"Loading high noise DiT model from {args.dit_high_noise}")
@@ -776,7 +774,7 @@ def merge_lora_weights(
             remaining_keys.sort()
             logger.info(f"Remaining LoRA modules after filtering: {remaining_keys}")
             if len(weights_sd) == 0:
-                logger.warning(f"No keys left after filtering.")
+                logger.warning("No keys left after filtering.")
 
         if lycoris:
             lycoris_net, _ = create_network_from_weights(
@@ -870,7 +868,7 @@ def prepare_t2v_inputs(
     # Fun-Control: encode control video to latent space
     if config.is_fun_control:
         # TODO use same resizing as for image
-        logger.info(f"Encoding control video to latent space")
+        logger.info("Encoding control video to latent space")
         # C, F, H, W
         control_video = load_control_video(args.control_path, frames, height, width).to(device)
         vae.to_device(device)
@@ -968,7 +966,7 @@ def prepare_one_frame_inference(
     control_latents = []
     if control_image_tensors is not None:
         # encode image to latent space with VAE
-        logger.info(f"Encoding image to latent space")
+        logger.info("Encoding image to latent space")
 
         for ctrl_image_tensor in control_image_tensors:
             # encode image one by one
@@ -1088,7 +1086,7 @@ def prepare_i2v_inputs(
             clip.model.to(device)
 
             # encode image to CLIP context
-            logger.info(f"Encoding image to CLIP context")
+            logger.info("Encoding image to CLIP context")
             with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
                 clip_context = clip.visual([img_tensor[:, None, :, :]])
                 # I2V end image is not officially supported, so no additional CLIP context
@@ -1096,7 +1094,7 @@ def prepare_i2v_inputs(
                     end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
                     end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
                     clip_context = torch.concat([clip_context, end_clip_context], dim=0)
-            logger.info(f"Encoding complete")
+            logger.info("Encoding complete")
 
             # free CLIP model and clean memory
             del clip
@@ -1119,7 +1117,7 @@ def prepare_i2v_inputs(
         one_frame_inference_index, f_indices = None, None
 
         # encode image to latent space with VAE
-        logger.info(f"Encoding image to latent space")
+        logger.info("Encoding image to latent space")
         vae.to_device(device)
 
         # resize image
@@ -1162,12 +1160,12 @@ def prepare_i2v_inputs(
                 y = vae.encode([img_resized])[0]
 
         y = torch.concat([msk, y])
-        logger.info(f"Encoding complete")
+        logger.info("Encoding complete")
 
         # Fun-Control: encode control video to latent space
         if config.is_fun_control:
             # TODO use same resizing as for image
-            logger.info(f"Encoding control video to latent space")
+            logger.info("Encoding control video to latent space")
             # C, F, H, W
             control_video = load_control_video(args.control_path, frames + (1 if has_end_image else 0), height, width).to(device)
             with accelerator.autocast(), torch.no_grad():
@@ -1400,7 +1398,7 @@ def run_sampling(
                     time.sleep(5)
 
                 if args.offload_inactive_dit:
-                    logger.info(f"Switching model to CPU/GPU for both low and high noise models")
+                    logger.info("Switching model to CPU/GPU for both low and high noise models")
                     models[0].to("cpu")
 
                     if args.blocks_to_swap > 0:
@@ -1622,7 +1620,7 @@ def decode_latent(latent: torch.Tensor, args: argparse.Namespace, cfg) -> torch.
     del videos
     video = video.to(torch.float32).cpu()
 
-    logger.info(f"Decoding complete")
+    logger.info("Decoding complete")
     return video
 
 
