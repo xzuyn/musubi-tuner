@@ -35,7 +35,7 @@ import logging
 
 from musubi_tuner.qwen_image_train_network import QwenImageNetworkTrainer
 from musubi_tuner.utils import huggingface_utils, model_utils, sai_model_spec, train_utils
-from musubi_tuner.utils.safetensors_utils import mem_eff_save_file
+from musubi_tuner.utils.safetensors_utils import MemoryEfficientSafeOpen, load_safetensors, mem_eff_save_file
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -68,9 +68,50 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         loading_device: str,
         dit_weight_dtype: Optional[torch.dtype],
     ):
-        model = qwen_image_model.load_qwen_image_model(
-            accelerator.device, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype, args.fp8_scaled
-        )
+        if "-00001-of-00" in dit_path:
+            logger.info(f"Pruned model detection is disabled because the weights are split into multiple files.")
+            model = qwen_image_model.load_qwen_image_model(
+                accelerator.device, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype, args.fp8_scaled
+            )
+            return model
+
+        # Pruned model with sparse index support
+        block_indices = set()
+        with MemoryEfficientSafeOpen(dit_path) as f:
+            for key in f.keys():
+                if key.startswith("transformer_blocks."):
+                    block_indices.add(int(key.split(".")[1]))
+
+        total_num_blocks = len(block_indices)
+        block_indices = sorted(list(block_indices))
+        block_index_map = None
+        if total_num_blocks != 60:
+            logger.info(f"Detected pruned DiT model with {total_num_blocks} blocks")
+            block_index_map = {block_indices[i]: i for i in range(total_num_blocks)}
+            logger.info(f"Block index map: {block_index_map}")
+
+        # create model
+        model = qwen_image_model.create_model(attn_mode, split_attn, dit_weight_dtype, num_layers=total_num_blocks)
+
+        # load weights from disk
+        logger.info(f"Loading weights from {dit_path}")
+        if block_index_map is None:
+            state_dict = load_safetensors(dit_path, device=loading_device, disable_mmap=True, dtype=dit_weight_dtype)
+        else:
+            state_dict = {}
+            with MemoryEfficientSafeOpen(dit_path) as f:
+                for key in f.keys():
+                    state_dict_key = key
+                    if key.startswith("transformer_blocks."):
+                        block_index = int(key.split(".")[1])
+                        new_block_index = block_index_map[block_index]
+                        state_dict_key = key.replace(f"transformer_blocks.{block_index}.", f"transformer_blocks.{new_block_index}.")
+
+                    state_dict[state_dict_key] = f.get_tensor(key).to(loading_device, dtype=dit_weight_dtype)
+
+        info = model.load_state_dict(state_dict, strict=True, assign=True)
+        logger.info(f"Loaded DiT model from {dit_path}, info={info}")
+
         return model
 
     def scale_shift_latents(self, latents):
