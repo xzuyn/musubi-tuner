@@ -78,7 +78,16 @@ url = "https://download.pytorch.org/whl/cu128"
 explicit = true
 
 [tool.ruff]
-lint.select = ["F821"]
+lint.ignore = [
+  "E402",  # module-import-not-at-top-of-file
+  "E712",  # true-false-comparison
+  "E721",  # type-comparison
+  "E722",  # bare-except
+  "E731",  # lambda-assignment
+  "E741",  # ambiguous-variable-name
+  "F601",  # multi-value-repeated-key-literal
+  "F841",  # unused-variable
+]
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore all rules for files with copyright headers from external sources
