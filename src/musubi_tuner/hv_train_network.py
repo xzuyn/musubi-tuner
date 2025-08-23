@@ -1060,6 +1060,20 @@ class NetworkTrainer:
             t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
 
             noisy_model_input = (1 - t) * latents + t * noise
+        elif args.timestep_sampling.startswith("uniform_sparse"):
+            allowed_timesteps = torch.tensor(
+                [0.999] + [round(i / 100, 3) for i in range(99, 0, -1)] + [0.001],
+                device=device,
+                dtype=torch.float32,
+            )
+
+            t = allowed_timesteps[torch.randint(0, len(allowed_timesteps), (batch_size,))]
+
+            timesteps = t * 1000.0
+
+            t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
+
+            noisy_model_input = (1 - t) * latents + t * noise
         else:
             # Sample a random timestep for each image
             # for weighting schemes where we sample timesteps non-uniformly
@@ -2675,7 +2689,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "kl_optimal_4", "kl_optimal_8", "kl_optimal_16", "kl_optimal_32", "kl_optimal_multi"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "kl_optimal_4", "kl_optimal_8", "kl_optimal_16", "kl_optimal_20", "kl_optimal_25", "kl_optimal_32", "kl_optimal_50", "kl_optimal_multi", "uniform_sparse"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
