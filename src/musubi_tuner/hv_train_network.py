@@ -1061,18 +1061,10 @@ class NetworkTrainer:
 
             noisy_model_input = (1 - t) * latents + t * noise
         elif args.timestep_sampling.startswith("uniform_sparse"):
-            uniform_sparse_dict = {
-                "uniform_sparse_10": [0.999] + [round(i / 10, 3) for i in range(9, 0, -1)] + [0.001],
-                "uniform_sparse_20": [0.999] + [round(i / 20, 3) for i in range(19, 0, -1)] + [0.001],
-                "uniform_sparse_40": [0.999] + [round(i / 40, 3) for i in range(39, 0, -1)] + [0.001],
-                "uniform_sparse_50": [0.999] + [round(i / 50, 3) for i in range(49, 0, -1)] + [0.001],
-                "uniform_sparse_100": [0.999] + [round(i / 100, 3) for i in range(99, 0, -1)] + [0.001],
-                "uniform_sparse_200": [0.999] + [round(i / 200, 3) for i in range(199, 0, -1)] + [0.001],
-                "uniform_sparse_500": [0.999] + [round(i / 500, 3) for i in range(499, 0, -1)] + [0.001],
-            }
+            us_choice = int(args.timestep_sampling[15:])
 
             allowed_timesteps = torch.tensor(
-                uniform_sparse_dict[args.timestep_sampling],
+                [0.999] + [round(i / us_choice, 3) for i in range(us_choice - 1, 0, -1)] + [0.001],
                 device=device,
                 dtype=torch.float32,
             )
@@ -2699,7 +2691,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "kl_optimal_4", "kl_optimal_8", "kl_optimal_16", "kl_optimal_20", "kl_optimal_25", "kl_optimal_32", "kl_optimal_50", "kl_optimal_multi", "uniform_sparse_10", "uniform_sparse_20", "uniform_sparse_40", "uniform_sparse_50", "uniform_sparse_100", "uniform_sparse_200", "uniform_sparse_500"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "kl_optimal_4", "kl_optimal_8", "kl_optimal_16", "kl_optimal_20", "kl_optimal_25", "kl_optimal_32", "kl_optimal_50", "kl_optimal_multi", "uniform_sparse_4", "uniform_sparse_8", "uniform_sparse_10", "uniform_sparse_20", "uniform_sparse_25", "uniform_sparse_40", "uniform_sparse_50", "uniform_sparse_100", "uniform_sparse_125", "uniform_sparse_200", "uniform_sparse_250", "uniform_sparse_500"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
