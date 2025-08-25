@@ -981,56 +981,21 @@ class NetworkTrainer:
 
             timesteps += 1  # 1 to 1000
         elif args.timestep_sampling.startswith("kl_optimal"):
-            # Sigmas from ComfyUI, 1.0 sigma lowered to 0.999, 0.00031575 sigma increased to 0.001
+            # https://github.com/comfyanonymous/ComfyUI/blob/f6b93d41a03081fad3c1a01221eac9c42d6790df/comfy/samplers.py#L500
+            def kl_optimal_scheduler(n, sigma_min=0.00031575, sigma_max=1.0):
+                adj_idxs = torch.arange(n, dtype=torch.float).div_(n - 1)
+                sigmas = adj_idxs.new_zeros(n + 1)
+                sigmas[:-1] = (adj_idxs * math.atan(sigma_min) + (1 - adj_idxs) * math.atan(sigma_max)).tan_()
+                return [0.999] + sigmas[1:-2].tolist() + [0.001]  # 1.0 sigma lowered to 0.999, 0.00031575 sigma increased to 0.001
+            
             kl_optimal_dict = {
-                "kl_optimal_4": [
-                    0.999, 0.57749, 0.26817, 0.001,
-                ],
-                "kl_optimal_8": [
-                    0.999, 0.79755, 0.62847, 0.48174,
-                    0.35012, 0.22848, 0.11295, 0.001,
-                ],
-                "kl_optimal_16": [
-                    0.999, 0.90044, 0.80985, 0.72664,
-                    0.64953, 0.57749, 0.50968, 0.44541,
-                    0.38406, 0.32513, 0.26817, 0.21280,
-                    0.15864, 0.10538, 0.052703, 0.001,
-                ],
-                "kl_optimal_20": [
-                    0.999, 0.9206, 0.84701, 0.77841, 0.71409,
-                    0.65345, 0.59601, 0.54132, 0.48903, 0.43882,
-                    0.39039, 0.3435, 0.29793, 0.25346, 0.20992,
-                    0.16713, 0.12492, 0.083147, 0.04166, 0.001,
-                ],
-                "kl_optimal_25": [
-                    0.999, 0.93663, 0.87702, 0.82074, 0.76741,
-                    0.71669, 0.66829, 0.62197, 0.57749, 0.53466,
-                    0.49331, 0.45327, 0.41440, 0.37657, 0.33966,
-                    0.30356, 0.26817, 0.2334, 0.19916, 0.16536,
-                    0.13192, 0.09877, 0.065834, 0.03304, 0.001
-                ],
-                "kl_optimal_32": [
-                    0.999, 0.95059, 0.9035, 0.85852,
-                    0.81546, 0.77414, 0.73441, 0.69613,
-                    0.65917, 0.62343, 0.5888, 0.55519,
-                    0.52251, 0.49069, 0.45964, 0.42931,
-                    0.39964, 0.37056, 0.34202, 0.31396,
-                    0.28636, 0.25915, 0.23229, 0.20575,
-                    0.17948, 0.15345, 0.12763, 0.10197,
-                    0.07644, 0.05101, 0.025647, 0.001,
-                ],
-                "kl_optimal_50": [
-                    0.999, 0.96846, 0.93788, 0.90821, 0.87939,
-                    0.85137, 0.82410, 0.79755, 0.77166, 0.74641,
-                    0.72175, 0.69766, 0.67410, 0.65105, 0.62847,
-                    0.60634, 0.58463, 0.56333, 0.54241, 0.52186,
-                    0.50164, 0.48174, 0.46215, 0.44285, 0.42382,
-                    0.40504, 0.38651, 0.36821, 0.35012, 0.33223,
-                    0.31453, 0.29701, 0.27966, 0.26246, 0.24540,
-                    0.22848, 0.21168, 0.19500, 0.17842, 0.16193,
-                    0.14553, 0.12920, 0.11295, 0.096748, 0.0806,
-                    0.064493, 0.048420, 0.032371, 0.016339, 0.001
-                ],
+                "kl_optimal_4": kl_optimal_scheduler(4),
+                "kl_optimal_8": kl_optimal_scheduler(8),
+                "kl_optimal_16": kl_optimal_scheduler(16),
+                "kl_optimal_20": kl_optimal_scheduler(20),
+                "kl_optimal_25": kl_optimal_scheduler(25),
+                "kl_optimal_32": kl_optimal_scheduler(32),
+                "kl_optimal_50": kl_optimal_scheduler(50),
             }
             # Take all sigmas, round to the nearest timestep, and keep only unique
             kl_optimal_dict["kl_optimal_multi"] = sorted(
