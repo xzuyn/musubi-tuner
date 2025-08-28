@@ -442,7 +442,7 @@ class NetworkTrainer:
         return logs
 
     def get_optimizer(self, args, trainable_params: list[torch.nn.Parameter]) -> tuple[str, str, torch.optim.Optimizer]:
-        # adamw, adamw8bit, adafactor, came
+        # adamw, adamw8bit, adafactor
 
         optimizer_type = args.optimizer_type.lower()
 
@@ -508,24 +508,6 @@ class NetworkTrainer:
             logger.info(f"use AdamW optimizer | {optimizer_kwargs}")
             optimizer_class = torch.optim.AdamW
             optimizer = optimizer_class(trainable_params, lr=lr, **optimizer_kwargs)
-
-        elif optimizer_type == "CAME".lower():
-            try:
-                from came_pytorch import CAME
-            except ImportError:
-                raise ImportError("No came_pytorch / came_pytorchがインストールされていないようです")
-
-            logger.info(f"use CAME optimizer | {optimizer_kwargs}")
-            optimizer_class = CAME
-            optimizer = optimizer_class(
-                trainable_params,
-                lr=lr,
-                weight_decay=0.01,
-                enable_stochastic_rounding=True,
-                enable_cautious=True,
-                enable_8bit=True,
-                **optimizer_kwargs,
-            )
 
         if optimizer is None:
             # 任意のoptimizerを使う
