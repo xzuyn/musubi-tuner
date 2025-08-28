@@ -613,6 +613,78 @@ class NetworkTrainer:
             # logger.info(f"adafactor scheduler init lr {initial_lr}")
             return wrap_check_needless_num_warmup_steps(transformers.optimization.AdafactorSchedule(optimizer, initial_lr))
 
+        if name.lower() == "rex":
+            # https://github.com/IvanVassi/REX_LR
+            class RexLR(torch.optim.lr_scheduler.LRScheduler):
+                """
+                Reflected Exponential (REX) learning rate scheduler.
+
+                - Original implementation: https://github.com/IvanVassi/REX_LR
+                - Original license: Apache 2.0
+                - Based on: https://arxiv.org/abs/2107.04197
+
+                Args:
+                    optimizer (torch.optim.Optimizer): The optimizer to schedule the learning rate for.
+                    max_lr (float): The maximum learning rate.
+                    min_lr (float): The minimum learning rate.
+                    total_steps (int): The total number of training steps.
+                    num_warmup_steps (int): The number of warmup steps.
+                    last_epoch (int): The index of last step.
+                """
+
+                def __init__(self, optimizer, max_lr, min_lr=0.0, total_steps=0, num_warmup_steps=0, last_epoch=0):
+                    if min_lr > max_lr:
+                        raise ValueError(
+                            f'Value of "min_lr" should be less than value of "max_lr". Got min_lr={min_lr} and max_lr={max_lr}'
+                        )
+                    if num_warmup_steps > total_steps:
+                        raise ValueError(
+                            f"num_warmup_steps ({num_warmup_steps}) must be less than or equal to total_steps ({total_steps})."
+                        )
+
+                    self.min_lr = min_lr
+                    self.max_lr = max_lr
+                    self.total_steps = total_steps
+                    self.num_warmup_steps = num_warmup_steps
+                    self.last_epoch = max(last_epoch - 1, 0)
+
+                    # Ensure each parameter group has an "initial_lr" key to avoid issues when resuming.
+                    for group in optimizer.param_groups:
+                        group.setdefault("initial_lr", group["lr"])
+
+                    super().__init__(optimizer)
+
+                def get_lr(self):
+                    # Warmup phase: if defined, increase lr linearly from 0 to max_lr.
+                    if 1 <= self.last_epoch <= self.num_warmup_steps:
+                        return [
+                            base_lr * self.last_epoch / self.num_warmup_steps
+                            for base_lr in self.base_lrs
+                        ]
+
+                    # Post-warmup phase: adjust step relative to the end of warmup.
+                    step_after = self.last_epoch - self.num_warmup_steps
+                    remaining_steps = self.total_steps - self.num_warmup_steps
+
+                    # Avoid LR spiking
+                    if step_after >= remaining_steps or step_after == -1 or remaining_steps <= 0:
+                        return [self.min_lr for _ in self.base_lrs]
+
+                    mod_iter = step_after % remaining_steps
+                    z = (remaining_steps - mod_iter) / remaining_steps
+                    rex_factor = self.min_lr / self.max_lr + (1.0 - self.min_lr / self.max_lr) * (z / (0.1 + 0.9 * z))
+
+                    return [base_lr * rex_factor for base_lr in self.base_lrs]
+
+            return RexLR(
+                optimizer,
+                max_lr=args.learning_rate,
+                min_lr=args.learning_rate * min_lr_ratio if min_lr_ratio is not None else 0.0,
+                total_steps=num_training_steps,
+                num_warmup_steps=num_warmup_steps,
+                **lr_scheduler_kwargs,
+            )
+
         if name == DiffusersSchedulerType.PIECEWISE_CONSTANT.value:
             name = DiffusersSchedulerType(name)
             schedule_func = DIFFUSERS_TYPE_TO_SCHEDULER_FUNCTION[name]
