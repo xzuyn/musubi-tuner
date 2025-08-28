@@ -2,13 +2,7 @@
 
 This file provides guidance to Codex CLI when working with code in this repository.
 
-## 1. Project Context
-Here is the essential context for our project. Please read and understand it thoroughly.
-
-### Project Overview
-@./context/overview.md
-
-## 2. Other Guidelines
+## Guidelines
 
 ### Coding Style & Naming Conventions
 - Style: PEP 8, 4‑space indentation, limit lines to ~120 chars.
