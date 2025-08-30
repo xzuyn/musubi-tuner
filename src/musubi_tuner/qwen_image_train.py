@@ -47,14 +47,6 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
 
     # region model specific
 
-    @property
-    def architecture(self) -> str:
-        return ARCHITECTURE_QWEN_IMAGE
-
-    @property
-    def architecture_full_name(self) -> str:
-        return ARCHITECTURE_QWEN_IMAGE_FULL
-
     def handle_model_specific_args(self, args):
         super().handle_model_specific_args(args)
 
@@ -113,9 +105,6 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         logger.info(f"Loaded DiT model from {dit_path}, info={info}")
 
         return model
-
-    def scale_shift_latents(self, latents):
-        return latents
 
     # endregion model specific
 
