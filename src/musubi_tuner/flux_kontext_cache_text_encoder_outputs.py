@@ -97,6 +97,7 @@ def main():
     logger.info(f"Encoding with T5 and CLIP text encoders")
 
     def encode_for_text_encoder(batch: list[ItemInfo]):
+        nonlocal tokenizer1, text_encoder1, tokenizer2, text_encoder2
         encode_and_save_batch(tokenizer1, text_encoder1, tokenizer2, text_encoder2, batch, device)
 
     cache_text_encoder_outputs.process_text_encoder_batches(

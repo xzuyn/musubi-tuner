@@ -168,6 +168,7 @@ def main():
     logger.info("Encoding with Text Encoder 1")
 
     def encode_for_text_encoder_1(batch: list[ItemInfo]):
+        nonlocal text_encoder_1
         encode_and_save_batch(text_encoder_1, batch, is_llm=True, accelerator=accelerator)
 
     process_text_encoder_batches(
@@ -190,6 +191,7 @@ def main():
     logger.info("Encoding with Text Encoder 2")
 
     def encode_for_text_encoder_2(batch: list[ItemInfo]):
+        nonlocal text_encoder_2
         encode_and_save_batch(text_encoder_2, batch, is_llm=False, accelerator=None)
 
     process_text_encoder_batches(

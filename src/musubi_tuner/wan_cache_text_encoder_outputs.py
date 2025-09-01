@@ -81,6 +81,7 @@ def main():
     logger.info("Encoding with T5")
 
     def encode_for_text_encoder(batch: list[ItemInfo]):
+        nonlocal text_encoder, device, accelerator
         encode_and_save_batch(text_encoder, batch, device, accelerator)
 
     cache_text_encoder_outputs.process_text_encoder_batches(

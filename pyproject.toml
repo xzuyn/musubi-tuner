@@ -50,6 +50,7 @@ dev = [
   "matplotlib==3.10.0",
   "tensorboard",
   "prompt-toolkit==3.0.51",
+  "ruff>=0.12.10",
 ]
 
 [build-system]
@@ -75,3 +76,6 @@ explicit = true
 name = "pytorch-cu128"
 url = "https://download.pytorch.org/whl/cu128"
 explicit = true
+
+[tool.ruff]
+lint.select = ["F821"]
