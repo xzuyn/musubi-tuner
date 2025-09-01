@@ -1,5 +1,6 @@
 import argparse
 import gc
+from importlib.util import find_spec
 import random
 import os
 import re
@@ -33,10 +34,9 @@ from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscret
 from musubi_tuner.wan.utils.fm_solvers import FlowDPMSolverMultistepScheduler, get_sampling_sigmas, retrieve_timesteps
 from musubi_tuner.wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
 
-try:
+lycoris_available = find_spec("lycoris") is not None
+if lycoris_available:
     from lycoris.kohya import create_network_from_weights
-except:
-    pass
 
 from musubi_tuner.utils.model_utils import str_to_dtype
 from musubi_tuner.utils.device_utils import clean_memory_on_device
@@ -217,7 +217,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata")
     parser.add_argument("--latent_path", type=str, nargs="*", default=None, help="path to latent for decode. no inference")
-    parser.add_argument("--lycoris", action="store_true", help="use lycoris for inference")
+    parser.add_argument("--lycoris", action="store_true", help=f"use lycoris for inference{'' if lycoris_available else ' (not available)'}")
     parser.add_argument("--compile", action="store_true", help="Enable torch.compile")
     parser.add_argument(
         "--compile_args",
@@ -243,6 +243,9 @@ def parse_args() -> argparse.Namespace:
     assert (args.latent_path is None or len(args.latent_path) == 0) or (
         args.output_type == "images" or args.output_type == "video"
     ), "latent_path is only supported for images or video output"
+
+    if args.lycoris and not lycoris_available:
+        raise ValueError("install lycoris: https://github.com/KohakuBlueleaf/LyCORIS")
 
     return args
 

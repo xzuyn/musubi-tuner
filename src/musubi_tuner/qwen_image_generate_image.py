@@ -1,5 +1,6 @@
 import argparse
 import gc
+from importlib.util import find_spec
 import random
 import os
 import time
@@ -18,10 +19,7 @@ from musubi_tuner.qwen_image.qwen_image_utils import VAE_SCALE_FACTOR
 from musubi_tuner.utils.lora_utils import filter_lora_state_dict
 
 
-try:
-    pass
-except:
-    pass
+lycoris_available = find_spec("lycoris") is not None
 
 from musubi_tuner.networks import lora_qwen_image
 from musubi_tuner.utils.device_utils import clean_memory_on_device
@@ -128,7 +126,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--no_metadata", action="store_true", help="do not save metadata")
     parser.add_argument("--latent_path", type=str, nargs="*", default=None, help="path to latent for decode. no inference")
-    parser.add_argument("--lycoris", action="store_true", help="use lycoris for inference")
+    parser.add_argument("--lycoris", action="store_true", help=f"use lycoris for inference{'' if lycoris_available else ' (not available)'}")
 
     # New arguments for batch and interactive modes
     parser.add_argument("--from_file", type=str, default=None, help="Read prompts from a file")
@@ -143,6 +141,9 @@ def parse_args() -> argparse.Namespace:
     if args.latent_path is None or len(args.latent_path) == 0:
         if args.prompt is None and not args.from_file and not args.interactive:
             raise ValueError("Either --prompt, --from_file or --interactive must be specified")
+
+    if args.lycoris and not lycoris_available:
+        raise ValueError("install lycoris: https://github.com/KohakuBlueleaf/LyCORIS")
 
     return args
 

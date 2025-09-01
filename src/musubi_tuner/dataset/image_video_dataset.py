@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 import glob
+from importlib.util import find_spec
 import json
 import math
 import os
@@ -25,25 +26,17 @@ logging.basicConfig(level=logging.INFO)
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP"]
 
-try:
-
+if find_spec("pillow_avif") is not None:
+    import pillow_avif  # noqa: F401 # type: ignore
     IMAGE_EXTENSIONS.extend([".avif", ".AVIF"])
-except:
-    pass
 
-# JPEG-XL on Linux
-try:
-
+if find_spec("jxlpy") is not None:  # JPEG-XL on Linux
+    from jxlpy import JXLImagePlugin  # noqa: F401 # type: ignore
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
-except:
-    pass
 
-# JPEG-XL on Windows
-try:
-
+if find_spec("pillow_jxl") is not None:  # JPEG-XL on Windows
+    import pillow_jxl  # noqa: F401 # type: ignore
     IMAGE_EXTENSIONS.extend([".jxl", ".JXL"])
-except:
-    pass
 
 VIDEO_EXTENSIONS = [
     ".mp4",
