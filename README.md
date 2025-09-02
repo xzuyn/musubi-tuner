@@ -70,6 +70,13 @@ If you find this project helpful, please consider supporting its development via
 
 GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- September 2, 2025
+    - Code analysis with ruff has been introduced. Thanks to arledesma for [PR #483](https://github.com/kohya-ss/musubi-tuner/pull/483) and [PR #488](https://github.com/kohya-ss/musubi-tuner/pull/488).
+        - ruff is a Python code analysis and formatting tool.
+    - When contributing code, it would be helpful if you could run `ruff check` to verify the code style. Automatic fixes are also possible with `ruff --fix`.
+        - Note that code formatting should be done with `black`, and the `line-length` should be set to `132`.
+        - Guidelines will be developed later.
+
 - August 28, 2025
     - If you are using an RTX 50 series GPU, please try PyTorch 2.8.0.
     - Library dependencies have been updated, and version specifications have been removed from `bitsandbytes`. Please install the appropriate version according to your environment.
