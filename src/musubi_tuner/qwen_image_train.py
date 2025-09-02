@@ -16,7 +16,6 @@ from safetensors.torch import save_file
 from musubi_tuner import qwen_image_train_network
 from musubi_tuner.dataset import config_utils
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
-from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_QWEN_IMAGE, ARCHITECTURE_QWEN_IMAGE_FULL
 from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 from musubi_tuner.qwen_image import qwen_image_model
 from musubi_tuner.hv_train_network import (
@@ -61,7 +60,7 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         dit_weight_dtype: Optional[torch.dtype],
     ):
         if "-00001-of-00" in dit_path:
-            logger.info(f"Pruned model detection is disabled because the weights are split into multiple files.")
+            logger.info("Pruned model detection is disabled because the weights are split into multiple files.")
             model = qwen_image_model.load_qwen_image_model(
                 accelerator.device, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype, args.fp8_scaled
             )
@@ -207,7 +206,7 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
             attn_mode = "flash3"
         else:
             raise ValueError(
-                f"either --sdpa, --flash-attn, --flash3, --sage-attn or --xformers must be specified / --sdpa, --flash-attn, --flash3, --sage-attn, --xformersのいずれかを指定してください"
+                "either --sdpa, --flash-attn, --flash3, --sage-attn or --xformers must be specified / --sdpa, --flash-attn, --flash3, --sage-attn, --xformersのいずれかを指定してください"
             )
         transformer = self.load_transformer(accelerator, args, args.dit, attn_mode, args.split_attn, loading_device, dit_dtype)
 
