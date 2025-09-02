@@ -70,6 +70,10 @@ If you find this project helpful, please consider supporting its development via
 
 GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- September 2, 2025 (update)
+    - Fine-tuning for Qwen-Image has been added. See [PR #492](https://github.com/kohya-ss/musubi-tuner/pull/492).
+        - This trains the entire model rather than just the LoRA layers. See the [finetuning section of the Qwen-Image documentation](./docs/qwen_image.md#finetuning) for details.
+
 - September 2, 2025
     - Code analysis with ruff has been introduced. Thanks to arledesma for [PR #483](https://github.com/kohya-ss/musubi-tuner/pull/483) and [PR #488](https://github.com/kohya-ss/musubi-tuner/pull/488).
         - ruff is a Python code analysis and formatting tool.

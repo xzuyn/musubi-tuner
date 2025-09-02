@@ -49,6 +49,7 @@ def parse_args() -> argparse.Namespace:
     # )
 
     parser.add_argument("--dit", type=str, default=None, help="DiT directory or path")
+    parser.add_argument("--num_layers", type=int, default=None, help="Number of layers in the DiT model, default is None (60)")
     parser.add_argument("--edit", action="store_true", help="Enable Qwen-Image-Edit")
     parser.add_argument("--vae", type=str, default=None, help="VAE directory or path")
     parser.add_argument("--vae_enable_tiling", action="store_true", help="Enable tiling for VAE decoding. Default is False.")
@@ -286,6 +287,7 @@ def load_dit_model(
         args.fp8_scaled and not args.lycoris,
         lora_weights_list=lora_weights_list,
         lora_multipliers=args.lora_multiplier,
+        num_layers=args.num_layers,
     )
 
     # merge LoRA weights
