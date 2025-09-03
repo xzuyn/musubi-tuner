@@ -625,10 +625,14 @@ class NetworkTrainer:
                     min_lr (float): The minimum learning rate
                     num_steps (int): The total number of training steps
                     num_warmup_steps (int): The number of warmup steps
+                    rex_alpha (float): Constant added to the denominator of the REX factor;
+                        prevents division-by-zero and softens the initial decay (default: 0.1).
+                    rex_beta (float): Multiplier of z in the denominator of the REX factor;
+                        controls how quickly the decay flattens as z increases (default: 0.9).
                     last_epoch (int): The index of the last step
                 """
 
-                def __init__(self, optimizer, max_lr, min_lr=0.0, num_steps=0, num_warmup_steps=0, last_epoch=-1):
+                def __init__(self, optimizer, max_lr, min_lr=0.0, num_steps=0, num_warmup_steps=0, rex_alpha=0.1, rex_beta=0.9, last_epoch=-1):
                     if min_lr > max_lr:
                         raise ValueError(
                             f"Value of \"min_lr\" should be less than value of \"max_lr\". "
@@ -644,6 +648,8 @@ class NetworkTrainer:
                     self.max_lr = max_lr
                     self.num_steps = num_steps
                     self.num_warmup_steps = num_warmup_steps
+                    self.rex_alpha = rex_alpha
+                    self.rex_beta = rex_beta
                     self.last_epoch = last_epoch
 
                     # Ensure each parameter group has an "initial_lr" key to avoid issues when resuming
@@ -673,9 +679,9 @@ class NetworkTrainer:
 
                     # Calculate REX curve for current step
                     rex_z = (remaining_steps - (step_after % remaining_steps)) / remaining_steps
-                    rex_factor = (  # The paper uses 0.5+0.5, but IvanVassi used 0.1+0.9 which feels better
+                    rex_factor = (
                         self.min_lr / self.max_lr
-                        + (1.0 - self.min_lr / self.max_lr) * (rex_z / (0.1 + 0.9 * rex_z))
+                        + (1.0 - self.min_lr / self.max_lr) * (rex_z / (self.rex_alpha + self.rex_beta * rex_z))
                     )
 
                     return [base_lr * rex_factor for base_lr in self.base_lrs]
@@ -689,6 +695,8 @@ class NetworkTrainer:
                 ),
                 num_steps=num_training_steps,
                 num_warmup_steps=num_warmup_steps,
+                rex_alpha=args.rex_alpha,
+                rex_beta=args.rex_beta,
                 **lr_scheduler_kwargs,
             )
 
@@ -2584,6 +2592,20 @@ def setup_parser_common() -> argparse.ArgumentParser:
         type=float,
         default=1,
         help="Polynomial power for polynomial scheduler / polynomialスケジューラでのpolynomial power",
+    )
+    parser.add_argument(
+        "--rex_alpha",
+        type=float,
+        default=0.1,
+        help="Constant added to the denominator of the REX factor. Uses a value of 0.1 from IvanVassi's implementation."
+        " Use 0.5 to align with the Paper instead. / REX係数の分母に追加される定数。IvanVassiの実装では0.1の値を使用します。論文に合わせるには0.5を使用してください。",
+    )
+    parser.add_argument(
+        "--rex_beta",
+        type=float,
+        default=0.9,
+        help="Multiplier of z in the denominator of the REX factor. Uses a value of 0.9 from IvanVassi's implementation."
+        " Use 0.5 to align with the Paper instead. / REX係数の分母におけるzの乗数。IvanVassiの実装では0.9を使用しています。論文に合わせるため、0.5を使用してください。",
     )
     parser.add_argument(
         "--lr_scheduler_timescale",
