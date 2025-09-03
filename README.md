@@ -317,10 +317,10 @@ We welcome contributions! However, please note:
 - Due to limited maintainer resources, PR reviews and merges may take some time
 - Before starting work on major changes, please open an Issue for discussion
 - For PRs:
-  - Keep changes focused and reasonably sized
-  - Include clear descriptions
-  - Follow the existing code style
-  - Ensure documentation is updated
+    - Keep changes focused and reasonably sized
+    - Include clear descriptions
+    - Follow the existing code style
+    - Ensure documentation is updated
 
 ## License
 

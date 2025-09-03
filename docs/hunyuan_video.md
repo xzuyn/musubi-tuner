@@ -215,9 +215,9 @@ uv run --extra cu124 accelerate launch --num_cpu_threads_per_process 1 --mixed_p
     --output_dir path/to/output_dir --output_name name-of-lora
 ```
 
-__Update__: Changed the sample training settings to a learning rate of 2e-4, `--timestep_sampling` to `shift`, and `--discrete_flow_shift` to 7.0. Faster training is expected. If the details of the image are not learned well, try lowering the discete flow shift to around 3.0.
+If the details of the image are not learned well, try lowering the discrete flow shift to around 3.0.
 
-However, the training settings are still experimental. Appropriate learning rates, training steps, timestep distribution, loss weighting, etc. are not yet known. Feedback is welcome.
+The training settings are still experimental. Appropriate learning rates, training steps, timestep distribution, loss weighting, etc. are not yet known. Feedback is welcome.
 
 For additional options, use `python src/musubi_tuner/hv_train_network.py --help` (note that many options are unverified).
 
