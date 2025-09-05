@@ -274,7 +274,7 @@ def load_dit_model(
         lora_weights_list = None
 
     loading_weight_dtype = dit_weight_dtype
-    if args.fp8_scaled and not args.lycoris:
+    if args.fp8_scaled or args.lycoris:
         loading_weight_dtype = None  # we will load weights as-is and then optimize to fp8
 
     model = qwen_image_model.load_qwen_image_model(
