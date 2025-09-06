@@ -69,6 +69,11 @@ If you find this project helpful, please consider supporting its development via
 
 GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- September 6, 2025
+    - A new LR scheduler, Rex, has been added. Thanks to xzuyn for [PR #513](https://github.com/kohya-ss/musubi-tuner/pull/513).
+        - Similar to the Polynomial Scheduler with power set to less than 1, Rex has a more gradual decrease in learning rate.
+        - See [Advanced Configuration documentation](./docs/advanced_config.md#rex) for details.
+        
 - September 2, 2025 (update)
     - Fine-tuning for Qwen-Image has been added. See [PR #492](https://github.com/kohya-ss/musubi-tuner/pull/492).
         - This trains the entire model rather than just the LoRA layers. See the [finetuning section of the Qwen-Image documentation](./docs/qwen_image.md#finetuning) for details.
