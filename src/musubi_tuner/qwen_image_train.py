@@ -281,9 +281,9 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         #     network_dtype = weight_dtype
         #     network.to(network_dtype)
         if args.full_bf16:
-            assert (
-                args.mixed_precision == "bf16"
-            ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            assert args.mixed_precision == "bf16", (
+                "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            )
             accelerator.print("enable full bf16 training.")
 
         if blocks_to_swap > 0:
@@ -518,7 +518,7 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         optimizer_train_fn()
 
         for epoch in range(epoch_to_start, num_train_epochs):
-            accelerator.print(f"\nepoch {epoch+1}/{num_train_epochs}")
+            accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
 
             metadata["ss_epoch"] = str(epoch + 1)
