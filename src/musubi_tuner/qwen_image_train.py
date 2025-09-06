@@ -216,7 +216,7 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
             transformer.move_to_device_except_swap_blocks(accelerator.device)
 
         if args.gradient_checkpointing:
-            transformer.enable_gradient_checkpointing()
+            transformer.enable_gradient_checkpointing(args.gradient_checkpointing_cpu_offload)
 
         # prepare optimizer, data loader etc.
         accelerator.print("prepare optimizer, data loader etc.")
@@ -359,6 +359,7 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
             "ss_num_batches_per_epoch": len(train_dataloader),
             "ss_num_epochs": num_train_epochs,
             "ss_gradient_checkpointing": args.gradient_checkpointing,
+            "ss_gradient_checkpointing_cpu_offload": args.gradient_checkpointing_cpu_offload,
             "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
