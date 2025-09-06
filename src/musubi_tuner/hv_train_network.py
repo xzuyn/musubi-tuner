@@ -39,6 +39,7 @@ from musubi_tuner.hunyuan_model.models import load_transformer, get_rotary_pos_e
 import musubi_tuner.hunyuan_model.text_encoder as text_encoder_module
 from musubi_tuner.hunyuan_model.vae import load_vae, VAE_VER
 import musubi_tuner.hunyuan_model.vae as vae_module
+from musubi_tuner.modules.lr_schedulers import RexLR
 from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 import musubi_tuner.networks.lora as lora_module
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
@@ -614,89 +615,14 @@ class NetworkTrainer:
             return wrap_check_needless_num_warmup_steps(transformers.optimization.AdafactorSchedule(optimizer, initial_lr))
 
         if name.lower() == "rex":
-            class RexLR(torch.optim.lr_scheduler.LRScheduler):
-                """
-                Reflected Exponential (REX) learning rate scheduler (https://arxiv.org/abs/2107.04197)
-                Modified from: https://github.com/IvanVassi/REX_LR
-
-                Args:
-                    optimizer (torch.optim.Optimizer): The optimizer to schedule the learning rate for
-                    max_lr (float): The maximum learning rate
-                    min_lr (float): The minimum learning rate
-                    num_steps (int): The total number of training steps
-                    num_warmup_steps (int): The number of warmup steps
-                    rex_alpha (float): Constant added to the denominator of the REX factor;
-                        prevents division-by-zero and softens the initial decay (default: 0.1).
-                    rex_beta (float): Multiplier of z in the denominator of the REX factor;
-                        controls how quickly the decay flattens as z increases (default: 0.9).
-                    last_epoch (int): The index of the last step
-                """
-
-                def __init__(self, optimizer, max_lr, min_lr=0.0, num_steps=0, num_warmup_steps=0, rex_alpha=0.1, rex_beta=0.9, last_epoch=-1):
-                    if min_lr > max_lr:
-                        raise ValueError(
-                            f"Value of \"min_lr\" should be less than value of \"max_lr\". "
-                            f"Got min_lr={min_lr} and max_lr={max_lr}"
-                        )
-                    if num_warmup_steps > num_steps:
-                        raise ValueError(
-                            f"num_warmup_steps ({num_warmup_steps}) must be less than "
-                            f"or equal to num_steps ({num_steps})"
-                        )
-
-                    self.min_lr = min_lr
-                    self.max_lr = max_lr
-                    self.num_steps = num_steps
-                    self.num_warmup_steps = num_warmup_steps
-                    self.rex_alpha = rex_alpha
-                    self.rex_beta = rex_beta
-                    self.last_epoch = last_epoch
-
-                    # Ensure each parameter group has an "initial_lr" key to avoid issues when resuming
-                    for group in optimizer.param_groups:
-                        group.setdefault("initial_lr", group["lr"])
-
-                    super().__init__(optimizer, last_epoch)
-
-                def get_lr(self):
-                    # Single warmup step
-                    if self.num_warmup_steps == 1 and self.last_epoch == 1:
-                        return [self.min_lr for _ in self.base_lrs]
-                    # Multiple warmup steps; increase lr linearly from min_lr to max_lr
-                    elif self.num_warmup_steps > 1 and self.last_epoch >= 1 and self.last_epoch <= (self.num_warmup_steps - 1):
-                        return [
-                            self.min_lr + (self.max_lr - self.min_lr) * (self.last_epoch - 1) / (self.num_warmup_steps - 1)
-                            for _ in self.base_lrs
-                        ]
-
-                    # Post-warmup phase: adjust step relative to the end of warmup
-                    step_after = self.last_epoch - self.num_warmup_steps
-                    remaining_steps = self.num_steps - self.num_warmup_steps
-
-                    # Avoid LR spiking
-                    if step_after >= remaining_steps or step_after == -1 or remaining_steps <= 0:
-                        return [self.min_lr for _ in self.base_lrs]
-
-                    # Calculate REX curve for current step
-                    rex_z = (remaining_steps - (step_after % remaining_steps)) / remaining_steps
-                    rex_factor = (
-                        self.min_lr / self.max_lr
-                        + (1.0 - self.min_lr / self.max_lr) * (rex_z / (self.rex_alpha + self.rex_beta * rex_z))
-                    )
-
-                    return [base_lr * rex_factor for base_lr in self.base_lrs]
-
             return RexLR(
                 optimizer,
                 max_lr=args.learning_rate,
                 min_lr=(  # Will start and end with min_lr, use non-zero min_lr by default
-                    args.learning_rate * min_lr_ratio if min_lr_ratio is not None
-                    else args.learning_rate * 0.01
+                    args.learning_rate * min_lr_ratio if min_lr_ratio is not None else args.learning_rate * 0.01
                 ),
                 num_steps=num_training_steps,
                 num_warmup_steps=num_warmup_steps,
-                rex_alpha=args.rex_alpha,
-                rex_beta=args.rex_beta,
                 **lr_scheduler_kwargs,
             )
 
@@ -2594,20 +2520,6 @@ def setup_parser_common() -> argparse.ArgumentParser:
         help="Polynomial power for polynomial scheduler / polynomialスケジューラでのpolynomial power",
     )
     parser.add_argument(
-        "--rex_alpha",
-        type=float,
-        default=0.1,
-        help="Constant added to the denominator of the REX factor. Uses a value of 0.1 from IvanVassi's implementation."
-        " Use 0.5 to align with the Paper instead. / REX係数の分母に追加される定数。IvanVassiの実装では0.1の値を使用します。論文に合わせるには0.5を使用してください。",
-    )
-    parser.add_argument(
-        "--rex_beta",
-        type=float,
-        default=0.9,
-        help="Multiplier of z in the denominator of the REX factor. Uses a value of 0.9 from IvanVassi's implementation."
-        " Use 0.5 to align with the Paper instead. / REX係数の分母におけるzの乗数。IvanVassiの実装では0.9を使用しています。論文に合わせるため、0.5を使用してください。",
-    )
-    parser.add_argument(
         "--lr_scheduler_timescale",
         type=int,
         default=None,
@@ -2618,8 +2530,8 @@ def setup_parser_common() -> argparse.ArgumentParser:
         "--lr_scheduler_min_lr_ratio",
         type=float,
         default=None,
-        help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler and warmup decay scheduler"
-        + " / 初期学習率の比率としての最小学習率を指定する、cosine with min lr と warmup decay スケジューラ で有効",
+        help="The minimum learning rate as a ratio of the initial learning rate for cosine with min lr scheduler, warmup decay scheduler and rex scheduler"
+        + " / 初期学習率の比率としての最小学習率を指定する、cosine with min lr スケジューラ、warmup decay スケジューラ、rex スケジューラ で有効",
     )
     parser.add_argument("--lr_scheduler_type", type=str, default="", help="custom scheduler module / 使用するスケジューラ")
     parser.add_argument(
