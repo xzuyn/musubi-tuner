@@ -164,7 +164,17 @@ def to_device(x: Any, device: torch.device) -> Any:
         return x
 
 
-def to_cpu(x):
+def to_cpu(x: Any) -> Any:
+    """
+    Recursively moves torch.Tensor objects (and containers thereof) to CPU.
+
+    Args:
+        x: A torch.Tensor, or a (possibly nested) list, tuple, or dict containing tensors.
+
+    Returns:
+        The same structure as x, with all torch.Tensor objects moved to CPU.
+        Non-tensor objects are returned unchanged.
+    """
     if isinstance(x, torch.Tensor):
         return x.cpu()
     elif isinstance(x, list):
