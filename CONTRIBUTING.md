@@ -76,7 +76,7 @@ For feature requests:
 2. **Explain the problem** your feature would solve
 3. **Describe the proposed solution**
 4. **Consider alternatives** and their trade-offs
-5. **Wait for feedback** before starting implementation
+5. **Wait for feedback** before starting implementation (there's always a chance the PR won't be merged)
 
 For significant features, consider posting in [GitHub Discussions](https://github.com/kohya-ss/musubi-tuner/discussions) first to gather community input.
 
@@ -108,17 +108,6 @@ For significant features, consider posting in [GitHub Discussions](https://githu
 
 2. **Set up the development environment**:
 
-	**Option B: Using uv**
-   ```shell
-   # Install uv if not present
-   curl -LsSf https://astral.sh/uv/install.sh | sh  # Linux/Mac
-   # or
-   powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
-
-   # Install dependencies
-   uv sync --extra cu128  # or cu124 based on your CUDA version
-   ```
-
    **Option A: Using pip**
    ```shell
    # Create virtual environment
@@ -126,9 +115,9 @@ For significant features, consider posting in [GitHub Discussions](https://githu
 
    # Activate virtual environment
    # On Windows:
-	 .venv/Scripts/activate
+   .venv/Scripts/activate
    # On Linux/Mac:
-	 source .venv/bin/activate
+   source .venv/bin/activate
 
    # Install PyTorch (adjust for your CUDA version)
    pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128
@@ -138,6 +127,17 @@ For significant features, consider posting in [GitHub Discussions](https://githu
 
    # Install development dependencies
    pip install --group dev
+   ```
+
+	**Option B: Using uv**
+   ```shell
+   # Install uv if not present
+   curl -LsSf https://astral.sh/uv/install.sh | sh  # Linux/Mac
+   # or
+   powershell -c "irm https://astral.sh/uv/install.ps1 | iex"  # Windows
+
+   # Install dependencies
+   uv sync --extra cu128  # or cu124 based on your CUDA version
    ```
 
 3. **Configure Accelerate**:
@@ -154,7 +154,7 @@ This project uses **Ruff** for code linting and code formatting:
 - **Line length**: 132 characters
 - **Indentation**: 4 spaces
 - **Quote style**: Double quotes
-- **Target Python version**: 3.9
+- **Target Python version**: 3.10
 
 ### IDE
 
@@ -180,7 +180,7 @@ ruff format src
 - **Add type hints** where appropriate
 - **Keep functions focused** and reasonably sized
 - **Add docstrings** for public functions and classes
-- **Handle errors gracefully** with appropriate exception handling
+- **Handle errors appropriately** - Let unrecoverable errors fail fast; only catch and handle errors you can meaningfully recover from
 
 ### Import Organization
 
@@ -189,14 +189,20 @@ ruff format src
 - Local imports last
 - Use absolute imports when possible
 
-### Architecture-Specific Code
+### Code Modification Guidelines
 
-When working with architecture-specific code (HunyuanVideo, Wan2.1/2.2, FramePack, FLUX.1 Kontext, Qwen-Image):
+When working with existing code:
 
 - **Maintain compatibility** with existing interfaces
 - **Follow the existing module structure**
 - **Update relevant documentation** in the `docs/` directory
-- **Test across different architectures** if your changes affect multiple systems and you have the capability to do so
+- **Test across different architectures** if your changes affect multiple architectures and you have the capability to do so
+
+When working with architecture-specific code (HunyuanVideo, Wan2.1/2.2, FramePack, FLUX.1 Kontext, Qwen-Image):
+
+- **Follow naming conventions**: When adding a new architecture, follow the `{arch}_train_network.py` and `{arch}_generate_{type}.py` naming pattern
+- **Consider cross-architecture impact** when making changes within shared modules
+- **Test with representative models** if possible
 
 ## Testing
 
@@ -261,7 +267,7 @@ When contributing code derived from or inspired by other projects:
 
 1. **Add appropriate license headers** to new files
 2. **Include attribution comments** for copied/modified code
-3. **Update the LICENSE file** if introducing new license requirements
+3. **Update the LICENSE section on README.md** if introducing new license requirements for new architectures
 4. **Document the source** in your pull request description
 
 ### Third-Party Code
@@ -270,7 +276,7 @@ If your contribution includes third-party code:
 
 1. **Ensure license compatibility** with the project
 2. **Include the original license file** or header
-3. **Document the source and license** clearly
+3. **Document the source and license** clearly. Incorporate this in your pull request description as well
 4. **Fulfill all obligations** from the source license
 
 ## Community and Support
@@ -286,7 +292,7 @@ If your contribution includes third-party code:
 If you need help with:
 
 - **Using the software**: Check [GitHub Discussions](https://github.com/kohya-ss/musubi-tuner/discussions)
-- **Development setup**: Create an issue with the "question" label
+- **Development setup**: Create an issue with the "question" label or ask in discussions
 - **Contributing process**: Reference this guide or ask in discussions
 
 ### Recognition
