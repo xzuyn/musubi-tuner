@@ -18,6 +18,7 @@ from musubi_tuner.hunyuan_model.token_refiner import SingleTokenRefiner
 from musubi_tuner.modules.custom_offloading_utils import ModelOffloader, synchronize_device, clean_memory_on_device
 from musubi_tuner.hunyuan_model.posemb_layers import get_nd_rotary_pos_embed
 
+from musubi_tuner.utils.model_utils import create_cpu_offloading_wrapper
 from musubi_tuner.utils.safetensors_utils import MemoryEfficientSafeOpen
 
 
@@ -107,6 +108,7 @@ class MMDoubleStreamBlock(nn.Module):
         self.hybrid_seq_parallel_attn = None
 
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
 
     def enable_deterministic(self):
         self.deterministic = True
@@ -114,11 +116,13 @@ class MMDoubleStreamBlock(nn.Module):
     def disable_deterministic(self):
         self.deterministic = False
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, activation_cpu_offloading: bool = False):
         self.gradient_checkpointing = True
+        self.activation_cpu_offloading = activation_cpu_offloading
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
 
     def _forward(
         self,
@@ -251,7 +255,10 @@ class MMDoubleStreamBlock(nn.Module):
     # ) -> Tuple[torch.Tensor, torch.Tensor]:
     def forward(self, *args, **kwargs):
         if self.training and self.gradient_checkpointing:
-            return checkpoint(self._forward, *args, use_reentrant=False, **kwargs)
+            forward_fn = self._forward
+            if self.activation_cpu_offloading:
+                forward_fn = create_cpu_offloading_wrapper(forward_fn, self.img_attn_qkv.weight.device)
+            return checkpoint(forward_fn, *args, use_reentrant=False, **kwargs)
         else:
             return self._forward(*args, **kwargs)
 
@@ -307,6 +314,7 @@ class MMSingleStreamBlock(nn.Module):
         self.hybrid_seq_parallel_attn = None
 
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
 
     def enable_deterministic(self):
         self.deterministic = True
@@ -314,11 +322,13 @@ class MMSingleStreamBlock(nn.Module):
     def disable_deterministic(self):
         self.deterministic = False
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, activation_cpu_offloading: bool = False):
         self.gradient_checkpointing = True
+        self.activation_cpu_offloading = activation_cpu_offloading
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
 
     def _forward(
         self,
@@ -419,7 +429,10 @@ class MMSingleStreamBlock(nn.Module):
     # ) -> torch.Tensor:
     def forward(self, *args, **kwargs):
         if self.training and self.gradient_checkpointing:
-            return checkpoint(self._forward, *args, use_reentrant=False, **kwargs)
+            forward_fn = self._forward
+            if self.activation_cpu_offloading:
+                forward_fn = create_cpu_offloading_wrapper(forward_fn, self.linear1.weight.device)
+            return checkpoint(forward_fn, *args, use_reentrant=False, **kwargs)
         else:
             return self._forward(*args, **kwargs)
 
@@ -609,6 +622,7 @@ class HYVideoDiffusionTransformer(nn.Module):  # ModelMixin, ConfigMixin):
         )
 
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
         self.blocks_to_swap = None
         self.offloader_double = None
         self.offloader_single = None
@@ -622,18 +636,22 @@ class HYVideoDiffusionTransformer(nn.Module):  # ModelMixin, ConfigMixin):
     def dtype(self):
         return next(self.parameters()).dtype
 
-    def enable_gradient_checkpointing(self):
+    def enable_gradient_checkpointing(self, activation_cpu_offloading: bool = False):
         self.gradient_checkpointing = True
+        self.activation_cpu_offloading = activation_cpu_offloading
 
         self.txt_in.enable_gradient_checkpointing()
 
         for block in self.double_blocks + self.single_blocks:
-            block.enable_gradient_checkpointing()
+            block.enable_gradient_checkpointing(activation_cpu_offloading)
 
-        print("HYVideoDiffusionTransformer: Gradient checkpointing enabled.")
+        print(
+            f"HYVideoDiffusionTransformer: Gradient checkpointing enabled. Activation CPU offloading: {activation_cpu_offloading}"
+        )
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
+        self.activation_cpu_offloading = False
 
         self.txt_in.disable_gradient_checkpointing()
 
@@ -805,6 +823,7 @@ class HYVideoDiffusionTransformer(nn.Module):  # ModelMixin, ConfigMixin):
 
         freqs_cis = (freqs_cos, freqs_sin) if freqs_cos is not None else None
         # --------------------- Pass through DiT blocks ------------------------
+        input_device = img.device
         for block_idx, block in enumerate(self.double_blocks):
             double_block_args = [
                 img,
@@ -858,6 +877,8 @@ class HYVideoDiffusionTransformer(nn.Module):  # ModelMixin, ConfigMixin):
 
         img = x[:, :img_seq_len, ...]
         x = None
+        if img.device != input_device:
+            img = img.to(input_device)
 
         # ---------------------------- Final layer ------------------------------
         img = self.final_layer(img, vec)  # (N, T, patch_size ** 2 * out_channels)
