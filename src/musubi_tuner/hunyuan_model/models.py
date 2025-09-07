@@ -645,7 +645,9 @@ class HYVideoDiffusionTransformer(nn.Module):  # ModelMixin, ConfigMixin):
         for block in self.double_blocks + self.single_blocks:
             block.enable_gradient_checkpointing(activation_cpu_offloading)
 
-        print(f"HYVideoDiffusionTransformer: Gradient checkpointing enabled. Activation CPU offloading: {activation_cpu_offloading}")
+        print(
+            f"HYVideoDiffusionTransformer: Gradient checkpointing enabled. Activation CPU offloading: {activation_cpu_offloading}"
+        )
 
     def disable_gradient_checkpointing(self):
         self.gradient_checkpointing = False
