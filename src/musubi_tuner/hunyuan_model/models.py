@@ -15,11 +15,12 @@ from musubi_tuner.hunyuan_model.posemb_layers import apply_rotary_emb
 from musubi_tuner.hunyuan_model.mlp_layers import MLP, MLPEmbedder, FinalLayer
 from musubi_tuner.hunyuan_model.modulate_layers import ModulateDiT, modulate, apply_gate
 from musubi_tuner.hunyuan_model.token_refiner import SingleTokenRefiner
-from musubi_tuner.modules.custom_offloading_utils import ModelOffloader, synchronize_device, clean_memory_on_device
+from musubi_tuner.modules.custom_offloading_utils import ModelOffloader
+from musubi_tuner.utils.device_utils import synchronize_device, clean_memory_on_device
 from musubi_tuner.hunyuan_model.posemb_layers import get_nd_rotary_pos_embed
 
 from musubi_tuner.utils.model_utils import create_cpu_offloading_wrapper
-from musubi_tuner.utils.safetensors_utils import MemoryEfficientSafeOpen
+from musubi_tuner.utils.safetensors_utils import load_safetensors
 
 
 class MMDoubleStreamBlock(nn.Module):
@@ -160,9 +161,9 @@ class MMDoubleStreamBlock(nn.Module):
             img_q_shape = img_q.shape
             img_k_shape = img_k.shape
             img_q, img_k = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-            assert img_q.shape == img_q_shape and img_k.shape == img_k_shape, (
-                f"img_kk: {img_q.shape}, img_q: {img_q_shape}, img_kk: {img_k.shape}, img_k: {img_k_shape}"
-            )
+            assert (
+                img_q.shape == img_q_shape and img_k.shape == img_k_shape
+            ), f"img_kk: {img_q.shape}, img_q: {img_q_shape}, img_kk: {img_k.shape}, img_k: {img_k_shape}"
             # img_q, img_k = img_qq, img_kk
 
         # Prepare txt for attention.
@@ -187,9 +188,9 @@ class MMDoubleStreamBlock(nn.Module):
         v = torch.cat((img_v, txt_v), dim=1)
         img_v = txt_v = None
 
-        assert cu_seqlens_q.shape[0] == 2 * img.shape[0] + 1, (
-            f"cu_seqlens_q.shape:{cu_seqlens_q.shape}, img.shape[0]:{img.shape[0]}"
-        )
+        assert (
+            cu_seqlens_q.shape[0] == 2 * img.shape[0] + 1
+        ), f"cu_seqlens_q.shape:{cu_seqlens_q.shape}, img.shape[0]:{img.shape[0]}"
 
         # attention computation start
         if not self.hybrid_seq_parallel_attn:
@@ -365,9 +366,9 @@ class MMSingleStreamBlock(nn.Module):
             img_q_shape = img_q.shape
             img_k_shape = img_k.shape
             img_q, img_k = apply_rotary_emb(img_q, img_k, freqs_cis, head_first=False)
-            assert img_q.shape == img_q_shape and img_k_shape == img_k.shape, (
-                f"img_kk: {img_q.shape}, img_q: {img_q.shape}, img_kk: {img_k.shape}, img_k: {img_k.shape}"
-            )
+            assert (
+                img_q.shape == img_q_shape and img_k_shape == img_k.shape
+            ), f"img_kk: {img_q.shape}, img_q: {img_q.shape}, img_kk: {img_k.shape}, img_k: {img_k.shape}"
             # img_q, img_k = img_qq, img_kk
             # del img_qq, img_kk
             q = torch.cat((img_q, txt_q), dim=1)
@@ -1014,15 +1015,8 @@ def load_transformer(dit_path, attn_mode, split_attn, device, dtype, in_channels
 
     if os.path.splitext(dit_path)[-1] == ".safetensors":
         # loading safetensors: may be already fp8
-        with MemoryEfficientSafeOpen(dit_path) as f:
-            state_dict = {}
-            for k in f.keys():
-                tensor = f.get_tensor(k)
-                tensor = tensor.to(device=device, dtype=dtype)
-                # TODO support comfy model
-                # if k.startswith("model.model."):
-                #     k = convert_comfy_model_key(k)
-                state_dict[k] = tensor
+        device = torch.device(device) if device is not None else None
+        state_dict = load_safetensors(dit_path, device=device, disable_mmap=True, dtype=dtype)
         transformer.load_state_dict(state_dict, strict=True, assign=True)
     else:
         transformer = load_state_dict(transformer, dit_path)
@@ -1035,14 +1029,14 @@ def get_rotary_pos_embed_by_shape(model, latents_size):
     ndim = 5 - 2
 
     if isinstance(model.patch_size, int):
-        assert all(s % model.patch_size == 0 for s in latents_size), (
-            f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), but got {latents_size}."
-        )
+        assert all(
+            s % model.patch_size == 0 for s in latents_size
+        ), f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), but got {latents_size}."
         rope_sizes = [s // model.patch_size for s in latents_size]
     elif isinstance(model.patch_size, list):
-        assert all(s % model.patch_size[idx] == 0 for idx, s in enumerate(latents_size)), (
-            f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), but got {latents_size}."
-        )
+        assert all(
+            s % model.patch_size[idx] == 0 for idx, s in enumerate(latents_size)
+        ), f"Latent size(last {ndim} dimensions) should be divisible by patch size({model.patch_size}), but got {latents_size}."
         rope_sizes = [s // model.patch_size[idx] for idx, s in enumerate(latents_size)]
 
     if len(rope_sizes) != target_ndim:

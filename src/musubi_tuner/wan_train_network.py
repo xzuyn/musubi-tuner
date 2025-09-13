@@ -17,7 +17,7 @@ from musubi_tuner.hv_train_network import (
     setup_parser_common,
     read_config_from_file,
 )
-from musubi_tuner.modules.custom_offloading_utils import synchronize_device
+from musubi_tuner.utils.device_utils import synchronize_device
 from musubi_tuner.modules.scheduling_flow_match_discrete import FlowMatchDiscreteScheduler
 from musubi_tuner.wan_generate_video import parse_one_frame_inference_args
 
@@ -79,9 +79,9 @@ class WanNetworkTrainer(NetworkTrainer):
 
         if self.high_low_training:
             if args.blocks_to_swap is not None and args.blocks_to_swap > 0:
-                assert not args.offload_inactive_dit, (
-                    "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
-                )
+                assert (
+                    not args.offload_inactive_dit
+                ), "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
             if args.num_timestep_buckets is not None:
                 logger.warning(
                     "num_timestep_buckets is not working well with high and low models training / high and lowモデルのトレーニングではnum_timestep_bucketsがうまく機能しません"
