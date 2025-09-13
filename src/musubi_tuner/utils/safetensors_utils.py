@@ -170,7 +170,6 @@ class MemoryEfficientSafeOpen:
             return torch.empty(metadata["shape"], dtype=target_dtype, device=device)
 
         # Determine if we should use pinned memory for GPU transfer
-        pin_to_gpu = False  # device is not None and device.type == "cuda"  # Set to False here to avoid using shared GPU memory
         non_blocking = device is not None and device.type == "cuda"
 
         # Calculate absolute file offset
@@ -190,10 +189,6 @@ class MemoryEfficientSafeOpen:
             cpu_tensor = self._deserialize_tensor(byte_tensor, metadata)  # view and reshape
             del byte_tensor
 
-            # Pin memory for faster GPU transfer
-            if pin_to_gpu:
-                cpu_tensor = cpu_tensor.pin_memory()
-
             # Transfer to target device and dtype
             gpu_tensor = cpu_tensor.to(device=device, dtype=target_dtype, non_blocking=non_blocking)
             del cpu_tensor
@@ -211,10 +206,6 @@ class MemoryEfficientSafeOpen:
         # deserialize (view and reshape)
         deserialized_tensor = self._deserialize_tensor(byte_tensor, metadata)
         del byte_tensor
-
-        # Pin memory for GPU transfer if needed
-        if pin_to_gpu:
-            deserialized_tensor = deserialized_tensor.pin_memory()
 
         # cast to target dtype and move to device
         return deserialized_tensor.to(device=device, dtype=target_dtype, non_blocking=non_blocking)
