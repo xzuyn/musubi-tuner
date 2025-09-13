@@ -958,18 +958,19 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         logger.info(f"Text preprocessing for prompt {i + 1}/{len(all_prompt_args_list)}: {prompt_args_item.prompt}")
 
         # prepare_text_inputs will move text_encoders to device temporarily
-        text_data = prepare_text_inputs(prompt_args_item, all_precomputed_image_data[i][1], device, temp_shared_models_txt)
+        
 
         if args.edit:
             control_image_data = all_precomputed_image_data[i]
             control_image_feature = control_image_data[1]
+            context, context_null = prepare_text_inputs(prompt_args_item, all_precomputed_image_data[i][1], device, temp_shared_models_txt)
         else:
             control_image_data = None
             control_image_feature = None
-        text_data = prepare_text_inputs(prompt_args_item, control_image_feature, device, temp_shared_models_txt)
+            context, context_null = prepare_text_inputs(prompt_args_item, control_image_feature, device, temp_shared_models_txt)
 
-        text_data["control"] = control_image_data
-        all_precomputed_text_data.append(text_data)
+        context["control"] = control_image_data
+        all_precomputed_text_data.append({"context":context, "context_null":context_null})
 
     # Models should be removed from device after prepare_text_inputs
     del tokenizer_batch, text_encoder_batch, temp_shared_models_txt, conds_cache_batch
