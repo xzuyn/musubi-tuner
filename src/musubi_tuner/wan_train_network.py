@@ -79,9 +79,9 @@ class WanNetworkTrainer(NetworkTrainer):
 
         if self.high_low_training:
             if args.blocks_to_swap is not None and args.blocks_to_swap > 0:
-                assert (
-                    not args.offload_inactive_dit
-                ), "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
+                assert not args.offload_inactive_dit, (
+                    "Block swap is not supported with offloading inactive DiT / 非アクティブDiTをオフロードする設定ではブロックスワップはサポートされていません"
+                )
             if args.num_timestep_buckets is not None:
                 logger.warning(
                     "num_timestep_buckets is not working well with high and low models training / high and lowモデルのトレーニングではnum_timestep_bucketsがうまく機能しません"

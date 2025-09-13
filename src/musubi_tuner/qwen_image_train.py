@@ -284,9 +284,9 @@ class QwenImageTrainer(QwenImageNetworkTrainer):
         #     network_dtype = weight_dtype
         #     network.to(network_dtype)
         if args.full_bf16:
-            assert (
-                args.mixed_precision == "bf16"
-            ), "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            assert args.mixed_precision == "bf16", (
+                "full_bf16 requires mixed precision='bf16' / full_bf16を使う場合はmixed_precision='bf16'を指定してください。"
+            )
             accelerator.print("enable full bf16 training.")
 
         if blocks_to_swap > 0:
