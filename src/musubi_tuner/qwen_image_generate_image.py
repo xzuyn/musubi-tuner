@@ -972,6 +972,7 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         vae_for_batch.to("cpu")  # Move VAE back to CPU after control image encoding
         clean_memory_on_device(device)  # Clean up VAE memory
     else:
+        # For Qwen-Image, no control images. Use placeholders for (control_latent, control_image_np)
         all_precomputed_image_data = [(None, None)] * len(all_prompt_args_list)  # No control images for Qwen-Image
 
     for i, prompt_args_item in enumerate(all_prompt_args_list):
