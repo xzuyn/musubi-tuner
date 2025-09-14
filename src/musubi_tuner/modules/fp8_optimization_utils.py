@@ -251,7 +251,8 @@ def load_safetensors_with_fp8_optimization(
                     value = weight_hook(key, value, keep_on_calc_device=(calc_device is not None))
 
                 if not is_target_key(key):
-                    value = value.to(calc_device if calc_device is not None and move_to_device else original_device)
+                    target_device = calc_device if (calc_device is not None and move_to_device) else original_device
+                    value = value.to(target_device)
                     state_dict[key] = value
                     continue
 
