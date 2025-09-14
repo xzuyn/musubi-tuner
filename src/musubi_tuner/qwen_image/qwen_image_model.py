@@ -411,7 +411,9 @@ class RMSNorm(nn.Module):
                 hidden_states = hidden_states.to(self.weight.dtype)
             elif self.weight.dtype == torch.float8_e4m3fn:  # fp8 support
                 hidden_states = hidden_states * self.weight.to(hidden_states.dtype)
-                return hidden_states + (self.bias.to(hidden_states.dtype) if self.bias is not None else 0)
+                hidden_states = hidden_states + (self.bias.to(hidden_states.dtype) if self.bias is not None else 0)
+                hidden_states = hidden_states.to(input_dtype)
+                return hidden_states
 
             hidden_states = hidden_states * self.weight
             if self.bias is not None:
@@ -728,12 +730,10 @@ class Attention(nn.Module):
         # joint_query: [B, S, H, D], joint_key: [B, S, H, D], joint_value: [B, S, H, D]
         total_len = seq_img + txt_seq_lens
         qkv = [joint_query, joint_key, joint_value]
-        org_dtype = joint_value.dtype
+        org_dtype = joint_key.dtype
         del joint_query, joint_key, joint_value
-
-        # q and k are float32 because of rotary embedding, v can be float16 or bfloat16. so we use joint_value's dtype as org_dtype
         joint_hidden_states = hunyuan_attention(
-            qkv, mode=self.attn_mode, attn_mask=attention_mask, total_len=total_len if self.split_attn else None, dtype=org_dtype
+            qkv, mode=self.attn_mode, attn_mask=attention_mask, total_len=total_len if self.split_attn else None
         )
         # joint_hidden_states: [B, S, H*D]
 
