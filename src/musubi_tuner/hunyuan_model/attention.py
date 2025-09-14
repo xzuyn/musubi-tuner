@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn.functional as F
@@ -101,6 +102,7 @@ def attention(
     max_seqlen_q=None,
     max_seqlen_kv=None,
     batch_size=1,
+    dtype: Optional[torch.dtype] = None,
 ):
     """
     Perform QKV self attention.
@@ -127,6 +129,13 @@ def attention(
     q, k, v = q_or_qkv_list if type(q_or_qkv_list) == list else (q_or_qkv_list, k, v)
     if type(q_or_qkv_list) == list:
         q_or_qkv_list.clear()
+
+    org_dtype = q.dtype
+    if dtype is not None:
+        q = q.to(dtype)
+        k = k.to(dtype)
+        v = v.to(dtype)
+
     split_attn = total_len is not None
     if (split_attn or cu_seqlens_q is None) and mode == "sageattn":
         mode = "sageattn_fixlen"
@@ -259,7 +268,7 @@ def attention(
 
     b, s, a, d = x.shape
     x = x.reshape(b, s, -1)
-    return x
+    return x.to(org_dtype)
 
 
 def parallel_attention(hybrid_seq_parallel_attn, q, k, v, img_q_len, img_kv_len, cu_seqlens_q, cu_seqlens_kv):

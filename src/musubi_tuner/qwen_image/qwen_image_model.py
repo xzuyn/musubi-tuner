@@ -728,10 +728,12 @@ class Attention(nn.Module):
         # joint_query: [B, S, H, D], joint_key: [B, S, H, D], joint_value: [B, S, H, D]
         total_len = seq_img + txt_seq_lens
         qkv = [joint_query, joint_key, joint_value]
-        org_dtype = joint_query.dtype
+        org_dtype = joint_value.dtype
         del joint_query, joint_key, joint_value
+
+        # q and k are float32 because of rotary embedding, v can be float16 or bfloat16. so we use joint_value's dtype as org_dtype
         joint_hidden_states = hunyuan_attention(
-            qkv, mode=self.attn_mode, attn_mask=attention_mask, total_len=total_len if self.split_attn else None
+            qkv, mode=self.attn_mode, attn_mask=attention_mask, total_len=total_len if self.split_attn else None, dtype=org_dtype
         )
         # joint_hidden_states: [B, S, H*D]
 
