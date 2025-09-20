@@ -218,8 +218,6 @@ def quantize_weight(
         tensor_max = torch.max(torch.abs(tensor).view(-1))
         scale = tensor_max / max_value
 
-    # Calculate scale factor
-    scale = torch.max(torch.abs(tensor.flatten())) / max_value
     # print(f"Optimizing {key} with scale: {scale}")
 
     # numerical safety
