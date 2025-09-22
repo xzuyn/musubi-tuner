@@ -2124,7 +2124,7 @@ def main():
                             break
                     else:
                         raise KeyError(f"'latent' not found in state_dict keys: {list(state_dict.keys())}")
-                    
+
                 with safe_open(latent_path, framework="pt") as f:
                     metadata = f.metadata()
                 if metadata is None:
