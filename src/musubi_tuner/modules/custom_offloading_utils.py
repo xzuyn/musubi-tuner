@@ -135,7 +135,7 @@ class Offloader:
     def swap_weight_devices_cuda(self, device: torch.device, layer_to_cpu: nn.Module, layer_to_cuda: nn.Module):
         assert layer_to_cpu.__class__ == layer_to_cuda.__class__
 
-        start_time = time.perf_counter()
+        # start_time = time.perf_counter()
 
         weight_swap_jobs = []
 
@@ -204,9 +204,9 @@ class Offloader:
         stream.synchronize()  # Synchronize staging buffer B to CUDA
         torch.cuda.current_stream().synchronize()  # This prevents the illegal loss value
 
-        print(
-            f"[{self.block_type}] Swapped weights in {time.perf_counter() - start_time:.2f}s. Count of modules swapped: {len(weight_swap_jobs)}"
-        )
+        # print(
+        #     f"[{self.block_type}] Swapped weights in {time.perf_counter() - start_time:.2f}s. Count of modules swapped: {len(weight_swap_jobs)}"
+        # )
 
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         if self.cuda_available:
