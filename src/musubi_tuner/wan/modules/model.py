@@ -854,7 +854,6 @@ class WanModel(nn.Module):  # ModelMixin, ConfigMixin):
                 e = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, t).unflatten(0, (bt, seq_len)).float())
                 e0 = self.time_projection(e).unflatten(2, (6, self.dim))
                 # e0: torch.Size([1, 14040, 6, 5120]), e: torch.Size([1, 14040, 5120]), t: torch.Size([14040])
-                # assert all([torch.max(e[0,i] - e[0,0]) == 0 for i in range(e.size(1))]), "Time embedding should be the same for all frames of the same video"
 
         assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
