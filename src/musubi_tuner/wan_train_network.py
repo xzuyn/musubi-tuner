@@ -472,7 +472,7 @@ class WanNetworkTrainer(NetworkTrainer):
         model = load_wan_model(
             self.config, accelerator.device, dit_path, attn_mode, split_attn, loading_device, dit_weight_dtype, args.fp8_scaled
         )
-        if args.force_2_1_time_embedding:
+        if args.force_v2_1_time_embedding:
             model.set_time_embedding_v2_1(True)
 
         if self.high_low_training:
@@ -488,7 +488,7 @@ class WanNetworkTrainer(NetworkTrainer):
                 dit_weight_dtype,
                 args.fp8_scaled,
             )
-            if args.force_2_1_time_embedding:
+            if args.force_v2_1_time_embedding:
                 model_high_noise.set_time_embedding_v2_1(True)
             if self.blocks_to_swap > 0:
                 # This moves the weights to the appropriate device

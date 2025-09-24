@@ -631,7 +631,7 @@ class WanModel(nn.Module):  # ModelMixin, ConfigMixin):
 
         self.time_embedding = nn.Sequential(nn.Linear(freq_dim, dim), nn.SiLU(), nn.Linear(dim, dim))
         self.time_projection = nn.Sequential(nn.SiLU(), nn.Linear(dim, dim * 6))
-        self.force_v2_1_time_embedding = False # Override to use 2.1 style time embedding for 2.2 model
+        self.force_v2_1_time_embedding = False  # Override to use 2.1 style time embedding for 2.2 model
 
         # blocks
         cross_attn_type = "t2v_cross_attn" if model_type == "t2v" else "i2v_cross_attn"
@@ -685,10 +685,10 @@ class WanModel(nn.Module):  # ModelMixin, ConfigMixin):
     @property
     def device(self):
         return self.patch_embedding.weight.device
-    
-    def set_time_embedding_v2_1(self, force_2_1_time_embedding: bool):
-        self.force_v2_1_time_embedding = force_2_1_time_embedding
-        if force_2_1_time_embedding:
+
+    def set_time_embedding_v2_1(self, force_v2_1_time_embedding: bool):
+        self.force_v2_1_time_embedding = force_v2_1_time_embedding
+        if force_v2_1_time_embedding:
             logger.info("WanModel: Using 2.1 style time embedding for time_projection.")
 
     def fp8_optimization(
@@ -841,7 +841,7 @@ class WanModel(nn.Module):  # ModelMixin, ConfigMixin):
                 e0 = self.time_projection(e).unflatten(1, (6, self.dim))
                 # e0: torch.Size([1, 6, 5120]), e: torch.Size([1, 5120]), t: torch.Size([1])
 
-                if self.model_version != "2.1": # Reshape to be compatible with 2.2 blocks
+                if self.model_version != "2.1":  # Reshape to be compatible with 2.2 blocks
                     e0 = e0.unsqueeze(1)
                     e = e.unsqueeze(1)
                     t = t.unsqueeze(1).expand(-1, seq_len)
