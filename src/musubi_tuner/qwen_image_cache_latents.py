@@ -16,26 +16,26 @@ logging.basicConfig(level=logging.INFO)
 
 def preprocess_contents_qwen_image(batch: List[ItemInfo]) -> tuple[torch.Tensor]:
     # item.content: target image (H, W, C)
-    # item.control_content: list of images (H, W, C), optional, the length of the list is 1 for Qwen-Image-Edit
+    # item.control_content: list of images (H, W, C), optional
 
     # Stack batch into target tensor (B,H,W,C) in RGB order and control images list of tensors (H, W, C)
-    # Currently control images must have same size as target images
+    # Currently control images must have same size as target images. The length of control images can vary.
     contents = []
     controls = []
     for item in batch:
         contents.append(torch.from_numpy(item.content))  # target image
 
         if item.control_content is not None and len(item.control_content) > 0:
-            controls.append(torch.from_numpy(item.control_content[0][..., :3]))  # ensure RGB, remove alpha if present
+            controls.append([torch.from_numpy(cc[..., :3]) for cc in item.control_content])  # ensure RGB, remove alpha if present
 
     contents = torch.stack(contents, dim=0)  # B, H, W, C
     contents = contents.permute(0, 3, 1, 2)  # B, H, W, C -> B, C, H, W
     contents = contents / 127.5 - 1.0  # normalize to [-1, 1]
 
     if len(controls) > 0:
-        controls = torch.stack(controls, dim=0)
-        controls = controls.permute(0, 3, 1, 2)  # B, H, W, C -> B, C, H, W
-        controls = controls / 127.5 - 1.0  # normalize to [-1, 1]
+        controls = [torch.stack(c, dim=0) for c in controls]  # list of list of (H, W, C) -> list of (F, H, W, C)
+        controls = [c.permute(3, 0, 1, 2) for c in controls]  # list of (F, H, W, C) -> list of (C, F, H, W)
+        controls = [c / 127.5 - 1.0 for c in controls]  # normalize to [-1, 1]
     else:
         controls = None
 
@@ -46,11 +46,14 @@ def encode_and_save_batch(vae: qwen_image_autoencoder_kl.AutoencoderKLQwenImage,
     # item.content: target image (H, W, C)
     contents, controls = preprocess_contents_qwen_image(batch)  # (B, C, H, W)
     contents = contents.unsqueeze(2)  # (B, C, 1, H, W), Qwen-Image VAE needs F axis
-    controls = controls.unsqueeze(2) if controls is not None else None  # (B, C, 1, H, W)
 
     with torch.no_grad():
         latents = vae.encode_pixels_to_latents(contents.to(vae.device, dtype=vae.dtype))
-        control_latents = vae.encode_pixels_to_latents(controls.to(vae.device, dtype=vae.dtype)) if controls is not None else None
+        control_latents = (
+            [vae.encode_pixels_to_latents(c.to(vae.device, dtype=vae.dtype).unsqueeze(0)) for c in controls]
+            if controls is not None
+            else None
+        )
 
     # # debugging: decode and visualize the latents
     # with torch.no_grad():
