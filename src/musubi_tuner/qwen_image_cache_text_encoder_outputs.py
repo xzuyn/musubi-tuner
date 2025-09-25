@@ -6,6 +6,7 @@ import accelerate
 from transformers import Qwen2_5_VLForConditionalGeneration, Qwen2Tokenizer, Qwen2VLProcessor
 
 from musubi_tuner.dataset import config_utils
+from musubi_tuner.dataset import image_video_dataset
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
 
 from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_QWEN_IMAGE, ItemInfo, save_text_encoder_output_cache_qwen_image
@@ -23,6 +24,7 @@ def encode_and_save_batch(
     tokenizer: Qwen2Tokenizer,
     text_encoder: Qwen2_5_VLForConditionalGeneration,
     vl_processor: Optional[Qwen2VLProcessor],
+    mode: Optional[str],
     batch: list[ItemInfo],
     device: torch.device,
     accelerator: Optional[accelerate.Accelerator],
@@ -35,11 +37,20 @@ def encode_and_save_batch(
     if is_edit:
         images = []
         for item in batch:
+            # item.control_content: list of images (H, W, C), optional
             assert item.control_content is not None and len(item.control_content) > 0, (
                 f"Item {item.item_key} must have control content for Qwen-Image-Edit"
             )
-            control_content = item.control_content[0]  # np.ndarray, 0-255
-            control_content = control_content[..., :3]  # ensure RGB, remove alpha if present
+            # control_content = item.control_content  # list of np.ndarray, 0-255
+            control_content = []
+            for cc in item.control_content:
+                cond_resize_size = image_video_dataset.BucketSelector.calculate_bucket_resolution(
+                    cc.size, (cc.shape[1], cc.shape[0]), reso_steps=32
+                )
+                cc = cc[..., :3] if cc.shape[2] == 4 else cc  # ensure RGB, remove alpha if present
+                cc = image_video_dataset.resize_image_to_bucket(cc, cond_resize_size)
+                control_content.append(cc)
+
             images.append(control_content)  # vl_processor accepts PIL.Image and np.ndarray
 
     # encode prompt
@@ -49,7 +60,9 @@ def encode_and_save_batch(
                 if not is_edit:
                     embed, mask = qwen_image_utils.get_qwen_prompt_embeds(tokenizer, text_encoder, prompts)
                 else:
-                    embed, mask = qwen_image_utils.get_qwen_prompt_embeds_with_image(vl_processor, text_encoder, prompts, images)
+                    embed, mask = qwen_image_utils.get_qwen_prompt_embeds_with_image(
+                        vl_processor, text_encoder, prompts, images, mode=mode
+                    )
                 if embed.dtype == torch.float8_e4m3fn:  # T5 returns bf16, but QwenVL-2.5 returns fp8
                     embed = embed.to(torch.bfloat16)
 
@@ -71,7 +84,8 @@ def main():
     parser = qwen_image_setup_parser(parser)
 
     args = parser.parse_args()
-    is_edit = args.edit
+    is_edit = args.edit or args.edit_plus
+    mode = None if not is_edit else ("edit" if args.edit else "edit-plus")
 
     device = args.device if args.device is not None else "cuda" if torch.cuda.is_available() else "cpu"
     device = torch.device(device)
@@ -111,8 +125,8 @@ def main():
     logger.info("Encoding with Qwen2.5-VL")
 
     def encode_for_text_encoder(batch: list[ItemInfo]):
-        nonlocal tokenizer, text_encoder, vl_processor, device, accelerator
-        encode_and_save_batch(tokenizer, text_encoder, vl_processor, batch, device, accelerator)
+        nonlocal tokenizer, text_encoder, vl_processor, device, accelerator, mode
+        encode_and_save_batch(tokenizer, text_encoder, vl_processor, mode, batch, device, accelerator)
 
     cache_text_encoder_outputs.process_text_encoder_batches(
         args.num_workers,
@@ -136,6 +150,8 @@ def qwen_image_setup_parser(parser: argparse.ArgumentParser) -> argparse.Argumen
     parser.add_argument("--text_encoder", type=str, default=None, required=True, help="Text Encoder (Qwen2.5-VL) checkpoint path")
     parser.add_argument("--fp8_vl", action="store_true", help="use fp8 for Text Encoder model")
     parser.add_argument("--edit", action="store_true", help="cache Text Encoder outputs for Qwen-Image-Edit")
+    parser.add_argument("--edit_plus", action="store_true", help="cache for Qwen-Image-Edit-2509 (with multiple control images)")
+
     return parser
 
 

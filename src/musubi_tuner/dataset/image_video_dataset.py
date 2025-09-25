@@ -500,6 +500,7 @@ class BucketSelector:
     ) -> tuple[int, int]:
         """
         Get the bucket resolution for the given image size, resolution and resolution steps.
+        Return (width, height).
         """
         if reso_steps is None and architecture is None:
             raise ValueError("resolution steps or architecture must be provided")
