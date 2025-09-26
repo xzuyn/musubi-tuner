@@ -73,6 +73,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--dit", type=str, default=None, help="DiT checkpoint path")
     parser.add_argument("--dit_high_noise", type=str, default=None, help="DiT checkpoint path for high noise (optional)")
+    parser.add_argument(
+        "--force_v2_1_time_embedding", action="store_true", help="Force using 2.1 style time embedding even for Wan 2.2"
+    )
     parser.add_argument("--offload_inactive_dit", action="store_true", help="Offload DiT model to CPU")
     parser.add_argument("--lazy_loading", action="store_true", help="Enable lazy loading for DiT models")
     parser.add_argument("--vae", type=str, default=None, help="VAE checkpoint path")
@@ -643,6 +646,8 @@ def load_dit_model(
         lora_multipliers=lora_multipliers,
         use_scaled_mm=args.fp8_fast,
     )
+    if args.force_v2_1_time_embedding:
+        model.set_time_embedding_v2_1(True)
 
     # merge LoRA weights
     if args.lycoris:
@@ -2303,3 +2308,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

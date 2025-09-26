@@ -93,7 +93,7 @@ def main():
     args = parser.parse_args()
 
     if args.disable_cudnn_backend:
-        print("Disabling cuDNN PyTorch backend.")
+        logger.info("Disabling cuDNN PyTorch backend.")
         torch.backends.cudnn.enabled = False
 
     if args.vae_dtype is not None:
