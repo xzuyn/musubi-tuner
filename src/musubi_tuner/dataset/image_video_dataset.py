@@ -76,7 +76,7 @@ ARCHITECTURE_FLUX_KONTEXT_FULL = "flux_kontext"
 ARCHITECTURE_QWEN_IMAGE = "qi"
 ARCHITECTURE_QWEN_IMAGE_FULL = "qwen_image"
 ARCHITECTURE_QWEN_IMAGE_EDIT = "qie"
-ARCHITECTURE_QWEN_IMAGE_FULL = "qwen_image_edit"
+ARCHITECTURE_QWEN_IMAGE_EDIT_FULL = "qwen_image_edit"
 
 
 def glob_images(directory, base="*"):
