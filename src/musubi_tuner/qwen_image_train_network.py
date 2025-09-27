@@ -10,8 +10,9 @@ from accelerate import Accelerator
 
 from musubi_tuner.dataset.image_video_dataset import (
     ARCHITECTURE_QWEN_IMAGE,
-    ARCHITECTURE_QWEN_IMAGE_EDIT,
     ARCHITECTURE_QWEN_IMAGE_FULL,
+    ARCHITECTURE_QWEN_IMAGE_EDIT,
+    ARCHITECTURE_QWEN_IMAGE_EDIT_FULL,
 )
 from musubi_tuner.qwen_image import qwen_image_autoencoder_kl, qwen_image_model, qwen_image_utils
 from musubi_tuner.hv_train_network import (
@@ -43,7 +44,7 @@ class QwenImageNetworkTrainer(NetworkTrainer):
     @property
     def architecture_full_name(self) -> str:
         assert self.is_edit is not None
-        return ARCHITECTURE_QWEN_IMAGE_FULL if self.is_edit else ARCHITECTURE_QWEN_IMAGE
+        return ARCHITECTURE_QWEN_IMAGE_EDIT_FULL if self.is_edit else ARCHITECTURE_QWEN_IMAGE_FULL
 
     def handle_model_specific_args(self, args):
         self.dit_dtype = torch.bfloat16
