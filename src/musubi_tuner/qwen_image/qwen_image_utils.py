@@ -11,7 +11,7 @@ from accelerate import init_empty_weights
 from diffusers.utils.torch_utils import randn_tensor
 from PIL import Image
 
-from musubi_tuner.dataset import image_video_dataset
+from musubi_tuner.dataset.image_video_dataset import BucketSelector, ARCHITECTURE_QWEN_IMAGE_EDIT
 from musubi_tuner.flux.flux_utils import is_fp8
 from musubi_tuner.qwen_image.qwen_image_autoencoder_kl import AutoencoderKLQwenImage
 from musubi_tuner.utils import image_utils
@@ -393,7 +393,6 @@ def get_qwen_prompt_embeds_with_image(
         mode (`str`, *optional*, defaults to "edit"):
             mode of the prompt, can be "edit" or "edit-plus"
     """
-    tokenizer_max_length = 1024
     if mode == "edit":
         prompt_template_encode = "<|im_start|>system\nDescribe the key features of the input image (color, shape, size, texture, objects, background), then explain how the user's text instruction should alter or modify the image. Generate a new image that meets the user's requirements while maintaining consistency with the original input where appropriate.<|im_end|>\n<|im_start|>user\n<|vision_start|><|image_pad|><|vision_end|>{}<|im_end|>\n<|im_start|>assistant\n"
     elif mode == "edit-plus":
@@ -691,11 +690,13 @@ def preprocess_control_image(
 
     if resize_to_prefered or resize_size is None:
         resolution = VAE_IMAGE_RESOLUTION if resize_to_prefered else control_image.size
-        resize_size = image_video_dataset.BucketSelector.calculate_bucket_resolution(control_image.size, resolution, reso_steps=32)
+        resize_size = BucketSelector.calculate_bucket_resolution(
+            control_image.size, resolution, architecture=ARCHITECTURE_QWEN_IMAGE_EDIT
+        )
 
         cond_resolution = CONDITION_IMAGE_RESOLUTION if resize_to_prefered else control_image.size
-        cond_resize_size = image_video_dataset.BucketSelector.calculate_bucket_resolution(
-            control_image.size, cond_resolution, reso_steps=32
+        cond_resize_size = BucketSelector.calculate_bucket_resolution(
+            control_image.size, cond_resolution, architecture=ARCHITECTURE_QWEN_IMAGE_EDIT
         )
     else:
         cond_resize_size = resize_size

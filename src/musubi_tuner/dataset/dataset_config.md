@@ -496,13 +496,13 @@ FLUX.1 Kontextのデータセット設定は、制御画像を持つ画像デー
 
 </details>
 
-### Qwen-Image-Edit
+### Qwen-Image-Edit and Qwen-Image-Edit-2509
 
-The Qwen-Image-Edit dataset configuration uses an image dataset with control images. Only one control image can be used.
+The Qwen-Image-Edit dataset configuration uses an image dataset with control images. However, only one control image can be used for the standard model (not `2509`).
 
 If you set `qwen_image_edit_no_resize_control`, it disables resizing of the control image. By default, the control image is resized to the same resolution as the image.
 
-Also, you can specify the resolution of the control image separately from the training image resolution by using `qwen_image_edit_control_resolution`. If you want to resize the control images the same as the official code, specify [1024,1024].
+Also, you can specify the resolution of the control image separately from the training image resolution by using `qwen_image_edit_control_resolution`. If you want to resize the control images the same as the official code, specify [1024,1024]. **We strongly recommend specifying this value.**
 
 `qwen_image_edit_no_resize_control` cannot be specified together with `qwen_image_edit_control_resolution`.
 
@@ -523,11 +523,11 @@ When this option is specified, the control image is resized to a resolution to h
 <details>
 <summary>日本語</summary>
 
-Qwen-Image-Editのデータセット設定は、制御画像を持つ画像データセットを使用します。ただし、制御画像は1枚しか使用できません。
+Qwen-Image-Editのデータセット設定は、制御画像を持つ画像データセットを使用します。複数枚の制御画像も使用可能ですが、無印（`2509`でない）モデルでは1枚のみ使用可能です。
 
 `qwen_image_edit_no_resize_control`を設定すると、制御画像のリサイズを無効にします。デフォルトでは、制御画像は画像と同じ解像度にリサイズされます。
 
-また、`qwen_image_edit_control_resolution`を使用することで、制御画像の解像度を学習画像の解像度と異なる値に指定できます。公式のコードと同じように制御画像をリサイズしたい場合は、[1024, 1024]を指定してください。
+また、`qwen_image_edit_control_resolution`を使用することで、制御画像の解像度を学習画像の解像度と異なる値に指定できます。公式のコードと同じように制御画像をリサイズしたい場合は、[1024, 1024]を指定してください。**この値の指定を強く推奨します。**
 
 `qwen_image_edit_no_resize_control`と `qwen_image_edit_control_resolution`は同時に指定できません。
 

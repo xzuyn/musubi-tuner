@@ -920,7 +920,7 @@ def load_shared_models(args: argparse.Namespace) -> Dict:
     tokenizer, text_encoder = qwen_image_utils.load_qwen2_5_vl(args.text_encoder, dtype=vl_dtype, device="cpu", disable_mmap=True)
     shared_models["tokenizer"] = tokenizer
     shared_models["text_encoder"] = text_encoder
-    if args.edit:
+    if args.edit or args.edit_plus:
         vl_processor = qwen_image_utils.load_vl_processor()
         shared_models["vl_processor"] = vl_processor
     return shared_models

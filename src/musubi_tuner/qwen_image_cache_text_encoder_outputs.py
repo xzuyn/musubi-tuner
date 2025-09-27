@@ -9,7 +9,12 @@ from musubi_tuner.dataset import config_utils
 from musubi_tuner.dataset import image_video_dataset
 from musubi_tuner.dataset.config_utils import BlueprintGenerator, ConfigSanitizer
 
-from musubi_tuner.dataset.image_video_dataset import ARCHITECTURE_QWEN_IMAGE, ItemInfo, save_text_encoder_output_cache_qwen_image
+from musubi_tuner.dataset.image_video_dataset import (
+    ARCHITECTURE_QWEN_IMAGE,
+    ARCHITECTURE_QWEN_IMAGE_EDIT,
+    ItemInfo,
+    save_text_encoder_output_cache_qwen_image,
+)
 
 import musubi_tuner.cache_text_encoder_outputs as cache_text_encoder_outputs
 import logging
@@ -41,17 +46,26 @@ def encode_and_save_batch(
             assert item.control_content is not None and len(item.control_content) > 0, (
                 f"Item {item.item_key} must have control content for Qwen-Image-Edit"
             )
-            # control_content = item.control_content  # list of np.ndarray, 0-255
+            # item.control_content, list of np.ndarray, 0-255
             control_content = []
             for cc in item.control_content:
                 cond_resize_size = image_video_dataset.BucketSelector.calculate_bucket_resolution(
-                    cc.size, (cc.shape[1], cc.shape[0]), reso_steps=32
+                    (cc.shape[1], cc.shape[0]),
+                    qwen_image_utils.CONDITION_IMAGE_RESOLUTION,
+                    architecture=ARCHITECTURE_QWEN_IMAGE_EDIT,
                 )
                 cc = cc[..., :3] if cc.shape[2] == 4 else cc  # ensure RGB, remove alpha if present
                 cc = image_video_dataset.resize_image_to_bucket(cc, cond_resize_size)
                 control_content.append(cc)
 
             images.append(control_content)  # vl_processor accepts PIL.Image and np.ndarray
+    else:
+        images = None
+
+    for i, item in enumerate(batch):
+        print(
+            f"Item {i}: {item.item_key}, prompt: {item.caption}, control images: {[im.shape for im in images[i]] if images is not None else None}"
+        )
 
     # encode prompt
     with torch.no_grad():
@@ -70,13 +84,15 @@ def encode_and_save_batch(
             if not is_edit:
                 embed, mask = qwen_image_utils.get_qwen_prompt_embeds(tokenizer, text_encoder, prompts)
             else:
-                embed, mask = qwen_image_utils.get_qwen_prompt_embeds_with_image(vl_processor, text_encoder, prompts, images)
+                embed, mask = qwen_image_utils.get_qwen_prompt_embeds_with_image(
+                    vl_processor, text_encoder, prompts, images, mode=mode
+                )
 
     # save prompt cache
-    for item, (embed, mask) in zip(batch, zip(embed, mask)):
-        txt_len = mask.to(dtype=torch.bool).sum().item()  # length of the text in the batch
-        embed = embed[:txt_len]
-        save_text_encoder_output_cache_qwen_image(item, embed)
+    for item, (embed_i, mask_i) in zip(batch, zip(embed, mask)):
+        txt_len = mask_i.to(dtype=torch.bool).sum().item()  # length of the text in the batch
+        embed_i = embed_i[:txt_len]
+        save_text_encoder_output_cache_qwen_image(item, embed_i)
 
 
 def main():
@@ -94,7 +110,8 @@ def main():
     blueprint_generator = BlueprintGenerator(ConfigSanitizer())
     logger.info(f"Load dataset config from {args.dataset_config}")
     user_config = config_utils.load_user_config(args.dataset_config)
-    blueprint = blueprint_generator.generate(user_config, args, architecture=ARCHITECTURE_QWEN_IMAGE)
+    architecture = ARCHITECTURE_QWEN_IMAGE_EDIT if is_edit else ARCHITECTURE_QWEN_IMAGE
+    blueprint = blueprint_generator.generate(user_config, args, architecture=architecture)
     train_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group)
 
     datasets = train_dataset_group.datasets
