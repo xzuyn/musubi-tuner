@@ -418,8 +418,6 @@ def prepare_image_inputs(
                 control_latent = vae.encode_pixels_to_latents(control_image_tensor.to(device, vae.dtype))
             control_latent = control_latent.to(torch.bfloat16).to("cpu")
 
-            control_latent = control_latent.cpu()
-
             control_latents.append(control_latent)
             control_image_nps.append(control_image_np)
 
