@@ -4,6 +4,8 @@
 
 This document describes the usage of the Qwen-Image and Qwen-Image-Edit/Edit-2509 architecture within the Musubi Tuner framework. Qwen-Image is a text-to-image generation model that supports standard text-to-image generation, and Qwen-Image-Edit is a model that supports image editing with control images.
 
+Qwen-Image-Edit-2509 can use multiple control images simultaneously. While the official version supports up to 3 images, Musubi Tuner allows specifying any number of images (though correct operation is confirmed only up to 3). Additionally, the sizes of the control images can differ (both during training and inference).
+
 This feature is experimental.
 
 Latent pre-caching, training, and inference options can be found in the `--help` output. Many options are shared with HunyuanVideo, so refer to the [HunyuanVideo documentation](./hunyuan_video.md) as needed.
@@ -12,6 +14,8 @@ Latent pre-caching, training, and inference options can be found in the `--help`
 <summary>日本語</summary>
 
 このドキュメントは、Musubi Tunerフレームワーク内でのQwen-Image、Qwen-Image-Edit/Edit-2509アーキテクチャの使用法について説明しています。Qwen-Imageは標準的なテキストから画像生成モデルで、Qwen-Image-Editは制御画像を使った画像編集をサポートするモデルです。
+
+Qwen-Image-Edit-2509は、複数枚の制御画像を同時に使用できます。公式では3枚までですが、Musubi Tunerでは任意の枚数を指定できます（正しく動作するのは3枚までです）。またそれぞれの制御画像のサイズは異なっていても問題ありません（学習時、推論時とも）。
 
 この機能は実験的なものです。
 
@@ -48,6 +52,8 @@ DiT, VAE, Text Encoder (Qwen2.5-VL) のモデルをダウンロードする必�
 
 ## Pre-caching / 事前キャッシング
 
+If you are using Qwen-Image-Edit or Edit-2509, please also refer to the [Qwen-Image-Edit section](../src/musubi_tuner/dataset/dataset_config.md#qwen-image-edit-and-qwen-image-edit-2509) of the dataset config documentation.
+
 ### Latent Pre-caching / latentの事前キャッシング
 
 Latent pre-caching uses a dedicated script for Qwen-Image.
@@ -65,6 +71,8 @@ python src/musubi_tuner/qwen_image_cache_latents.py \
 
 <details>
 <summary>日本語</summary>
+
+Qwen-Image-EditまたはEdit-2509を使用する場合は、事前にデータセット設定のドキュメントの[Qwen-Image-Editのセクション](../src/musubi_tuner/dataset/dataset_config.md#qwen-image-edit-and-qwen-image-edit-2509) も参照してください。
 
 latentの事前キャッシングはQwen-Image専用のスクリプトを使用します。
 
