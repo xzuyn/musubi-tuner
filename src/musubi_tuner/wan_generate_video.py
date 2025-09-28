@@ -1488,6 +1488,11 @@ def run_sampling(
             # update latent
             latent = temp_x0.squeeze(0)
 
+    if len(models) > 1 and args.lazy_loading:  # lazy loading
+        del model
+        gc.collect()
+        clean_memory_on_device(device)
+
     return latent
 
 
@@ -1843,13 +1848,14 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
         vae = load_vae(args, cfg, device, vae_dtype)
         vae.to_device(device)
 
+        clip = None
         if not cfg.v2_2:
             clip = load_clip_model(args, cfg, device)
             clip.model.to(device)
 
         # Process each image and encode with CLIP
         for prompt_data in prompts_data:
-            if "image_path" not in prompt_data:
+            if "image_path" not in prompt_data and args.image_path is None:
                 continue
 
             if not cfg.v2_2:
@@ -1868,7 +1874,8 @@ def process_batch_prompts(prompts_data: List[Dict], args: argparse.Namespace) ->
                 if prompt_args.end_image_path is not None and os.path.exists(prompt_args.end_image_path):
                     end_img = Image.open(prompt_args.end_image_path).convert("RGB")
                     end_img_tensor = TF.to_tensor(end_img).sub_(0.5).div_(0.5).to(device)
-                    end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
+                    with torch.amp.autocast(device_type=device.type, dtype=torch.float16), torch.no_grad():
+                        end_clip_context = clip.visual([end_img_tensor[:, None, :, :]])
                     clip_context = torch.concat([clip_context, end_clip_context], dim=0)
             else:
                 clip_context = None
@@ -2108,7 +2115,8 @@ def process_interactive(args: argparse.Namespace) -> None:
 
                 # Move model to CPU after generation
                 for model in models:
-                    model.to("cpu")
+                    if model is not None:  # not lazy loading
+                        model.to("cpu")
 
                 # Save latent if needed
                 height, width, _ = check_inputs(prompt_args)

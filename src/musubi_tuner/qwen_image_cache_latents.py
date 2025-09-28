@@ -117,6 +117,10 @@ def main():
     args = parser.parse_args()
     is_edit = args.edit or args.edit_plus
 
+    if args.disable_cudnn_backend:
+        logger.info("Disabling cuDNN PyTorch backend.")
+        torch.backends.cudnn.enabled = False
+
     if args.vae_dtype is not None:
         raise ValueError("VAE dtype is not supported in Qwen-Image.")
 
