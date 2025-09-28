@@ -291,7 +291,7 @@ video3: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx (trimmed to 31 frames)
 
 ### Sample for Image Dataset with Control Images
 
-The dataset with control images. This is used for training the one frame training for FramePack and FLUX.1 Kontext training.
+The dataset with control images. This is used for training the one frame training for FramePack, FLUX.1 Kontext training, and Qwen-Image-Edit training.
 
 The dataset configuration with caption text files is similar to the image dataset, but with an additional `control_directory` parameter.
 
@@ -312,12 +312,12 @@ If multiple control images are specified, the attribute names should be `control
 {"image_path": "/path/to/image2.jpg", "control_path_0": "/path/to/control2_0.png", "control_path_1": "/path/to/control2_1.png", "caption": "A caption for image2"}
 ```
 
-The control images can also have an alpha channel. In this case, the alpha channel of the image is used as a mask for the latent. FLUX.1 Kontext does not use masks.
+The control images can also have an alpha channel. In this case, the alpha channel of the image is used as a mask for the latent. This is only for the one frame training of FramePack.
 
 <details>
 <summary>日本語</summary>
 
-制御画像を持つデータセットです。現時点ではFramePackの単一フレーム学習およびFLUX.1 Kontext学習に使用します。
+制御画像を持つデータセットです。現時点ではFramePackの単一フレーム学習、FLUX.1 Kontext学習、Qwen-Image-Edit学習に使用します。
 
 キャプションファイルを用いる場合は`control_directory`を追加で指定してください。制御画像は、画像と同じファイル名（または拡張子のみが異なるファイル名）の、`control_directory`にある画像が使用されます（例：`image_dir/image1.jpg`と`control_dir/image1.png`）。`image_directory`の画像は学習対象の画像（推論時に生成する画像、変化後の画像）としてください。`control_directory`には推論時の開始画像を格納してください。キャプションは`image_directory`へ格納してください。
 
@@ -325,7 +325,7 @@ The control images can also have an alpha channel. In this case, the alpha chann
 
 メタデータJSONLファイルを使用する場合は、`control_path`を追加してください。複数枚の制御画像を指定する場合は、`control_path_0`, `control_path_1`のように数字を付与してください。
 
-制御画像はアルファチャンネルを持つこともできます。この場合、画像のアルファチャンネルはlatentへのマスクとして使用されます。FLUX.1 Kontextではマスクは使用されません。
+FramePackの単一フレーム学習では、制御画像はアルファチャンネルを持つこともできます。この場合、画像のアルファチャンネルはlatentへのマスクとして使用されます。
 
 </details>
 
