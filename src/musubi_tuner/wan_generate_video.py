@@ -1488,6 +1488,11 @@ def run_sampling(
             # update latent
             latent = temp_x0.squeeze(0)
 
+    if len(models) > 1 and args.lazy_loading:  # lazy loading
+        del model
+        gc.collect()
+        clean_memory_on_device(device)
+
     return latent
 
 
