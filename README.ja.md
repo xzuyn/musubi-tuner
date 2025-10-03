@@ -64,6 +64,20 @@
 
 GitHub Discussionsを有効にしました。コミュニティのQ&A、知識共有、技術情報の交換などにご利用ください。バグ報告や機能リクエストにはIssuesを、質問や経験の共有にはDiscussionsをご利用ください。[Discussionはこちら](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- 2025/10/03
+    - 各学習スクリプトで用いられているblock swap機構を改善し、Windows環境における共有GPUメモリの使用量を大きく削減しました。[PR #585](https://github.com/kohya-ss/musubi-tuner/pull/585)
+        - block swapのoffload先を共有GPUメモリからCPUメモリに変更しました。これによりトータルでのメモリ使用量は変わりませんが、共有GPUメモリの使用量が大幅に削減されます。
+        - たとえば32GBのメインメモリでは、offloadできるのは16GBまででしたが、今回の変更により「32GB-他の使用量」までoffloadできるようになります。
+        - 学習速度はわずかに低下します。技術的詳細は[PR #585](https://github.com/kohya-ss/musubi-tuner/pull/585)を参照してください。
+
+- 2025/09/30
+    - Qwen-Image-Edit-2509のLoRA学習で複数枚の制御画像を正しく取り扱えない不具合を修正しました。[PR #612](https://github.com/kohya-ss/musubi-tuner/pull/612)
+
+- 2025/09/28
+    - [Qwen-Image-Edit-2509](https://github.com/QwenLM/Qwen-Image)の学習、推論に対応しました。[PR #590](https://github.com/kohya-ss/musubi-tuner/pull/590) 詳細は[Qwen-Imageのドキュメント](./docs/qwen_image.md)を参照してください。
+        - 複数枚の制御画像を同時に使用できます。Qwen-Image-Edit-2509公式では3枚までですが、Musubi Tunerでは任意の枚数を指定できます（正しく動作するのは3枚までです）。
+        - DiTモデルの重みが異なるほか、キャッシュ、学習、推論の各スクリプトに、`--edit_plus`オプションが追加されています。
+
 - 2025/09/24
     - Wan2.2のLoRA学習および推論スクリプトに`--force_v2_1_time_embedding`オプションを追加しました。[PR #586](https://github.com/kohya-ss/musubi-tuner/pull/586) このオプションを指定することでVRAM使用量を削減できます。詳細は[Wanのドキュメント](./docs/wan.md#training--学習)を参照してください。
     
@@ -79,28 +93,6 @@ GitHub Discussionsを有効にしました。コミュニティのQ&A、知識�
 - 2025/09/20
     - `qwen_image_generate_image.py` で`--from_file`での生成が動作しない不具合が修正されました。[PR #553](https://github.com/kohya-ss/musubi-tuner/pull/553) および [PR #557](https://github.com/kohya-ss/musubi-tuner/pull/557) nmfisher 氏に感謝します。
         - また同スクリプトに`--append_original_name`オプションが追加されました。編集時に元の画像のベース名を出力ファイル名に追加します。
-
-- 2025/09/14
-    - Qwen-ImageのLoRA学習で`--fp8_base`を指定し`--fp8_scaled`指定しない時にFlashAttentionまたはxformersで学習するとエラーになる不具合を修正しました。[PR #559](https://github.com/kohya-ss/musubi-tuner/pull/559)
-        - なお、メモリが足りない場合以外は`--fp8_scaled`を指定することをお勧めします。
-
-- 2025/09/13
-    - `wan_generate_video.py` のFLF2V推論でマスクが誤っていた不具合が修正されました。[PR #548](https://github.com/kohya-ss/musubi-tuner/pull/548) LittleNyima 氏に感謝します。
-    - `.safetensors`ファイルの読み込みを高速化しました。[PR #556](https://github.com/kohya-ss/musubi-tuner/pull/556)
-        - モデルの読み込みが最大で1.5倍ほど高速化されます。
-
-- 2025/09/08
-    - ruffによるコード解析を導入しました。またコントリビューションのガイドライン（[英語版](./CONTRIBUTING.md)と[日本語版](./CONTRIBUTING.ja.md)）を追加しました。
-        - [Issue #524](https://github.com/kohya-ss/musubi-tuner/issues/524) および [PR #538](https://github.com/kohya-ss/musubi-tuner/pull/538)　arledesma氏に深く感謝します。
-    - ActivationのCPU offloadingを追加しました。[PR #537](https://github.com/kohya-ss/musubi-tuner/pull/537)
-        - block swapと組み合わせて使用することも可能です。
-        - 特に長い動画や大きなバッチサイズで学習する際に、VRAMの使用量を削減できます。block swapと組み合わせることでこれらの学習が可能になる場合があります。
-        - 詳細はPRおよび[HunyuanVideoのドキュメント](./docs/hunyuan_video.md#memory-optimization)を参照してください。
-
-- 2025/09/06
-    - 新しいLRスケジューラRexを追加しました。[PR #513](https://github.com/kohya-ss/musubi-tuner/pull/513) xzuyn氏に感謝します。
-        - powerを1未満に設定した Polynomial Scheduler に似ていますが、Rexは学習率の減少がより緩やかです。
-        - 詳細は[高度な設定のドキュメント](./docs/advanced_config.md#rex)を参照してください。
 
 ### リリースについて
 
