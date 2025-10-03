@@ -99,15 +99,6 @@ GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, 
     - A bug in `qwen_image_generate_image.py` where generation with `--from_file` did not work has been fixed. Thanks to nmfisher for [PR #553](https://github.com/kohya-ss/musubi-tuner/pull/553). Followed by [PR #557](https://github.com/kohya-ss/musubi-tuner/pull/557).
         - Additionally, the `--append_original_name` option has been added to the same script. This appends the base name of the original image to the output file name during editing.
 
-- September 14, 2025
-    - A bug was fixed that caused an error when training LoRA for Qwen-Image with `--fp8_base` specified and `--fp8_scaled` not specified using FlashAttention or xformers. See [PR #559](https://github.com/kohya-ss/musubi-tuner/pull/559).
-        - However, it is recommended to specify `--fp8_scaled` unless you are running out of memory.
-
-- September 13, 2025
-    - A bug in masking during FLF2V inference in `wan_generate_video.py` has been fixed. Thanks to LittleNyima for [PR #548](https://github.com/kohya-ss/musubi-tuner/pull/548).
-    - The loading speed of `.safetensors` files has been improved. See [PR #556](https://github.com/kohya-ss/musubi-tuner/pull/556).
-        - Model loading can be up to 1.5 times faster.
-
 ### Releases
 
 We are grateful to everyone who has been contributing to the Musubi Tuner ecosystem through documentation and third-party tools. To support these valuable contributions, we recommend working with our [releases](https://github.com/kohya-ss/musubi-tuner/releases) as stable reference points, as this project is under active development and breaking changes may occur.
