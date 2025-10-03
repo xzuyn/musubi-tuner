@@ -69,6 +69,12 @@ If you find this project helpful, please consider supporting its development via
 
 GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
+- October 3, 2025
+    - Improved the block swap mechanism used in each training script to significantly reduce shared GPU memory usage in Windows environments. See [PR #585](https://github.com/kohya-ss/musubi-tuner/pull/585)
+        - Changed the block swap offload destination from shared GPU memory to CPU memory. This does not change the total memory usage but significantly reduces shared GPU memory usage.
+        - For example, with 32GB of main memory, previously only up to 16GB could be offloaded, but with this change, it can be offloaded up to "32GB - other usage".
+        - Training speed may decrease slightly. For technical details, see [PR #585](https://github.com/kohya-ss/musubi-tuner/pull/585).
+
 - September 30, 2025
     - Fixed a bug in Qwen-Image-Edit-2509 LoRA training that prevented handling multiple control images correctly. See [PR #612](https://github.com/kohya-ss/musubi-tuner/pull/612)
 
