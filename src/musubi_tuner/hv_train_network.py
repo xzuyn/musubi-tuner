@@ -433,7 +433,9 @@ class NetworkTrainer:
 
             for i in range(idx, len(lrs)):
                 logs[f"lr/group{i}"] = float(lrs[i])
-                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower().endswith("Prodigy".lower()):
+                if args.optimizer_type.lower().startswith("DAdapt".lower()) or args.optimizer_type.lower().endswith(
+                    "Prodigy".lower()
+                ):
                     logs[f"lr/d*lr/group{i}"] = (
                         lr_scheduler.optimizers[-1].param_groups[i]["d"] * lr_scheduler.optimizers[-1].param_groups[i]["lr"]
                     )
