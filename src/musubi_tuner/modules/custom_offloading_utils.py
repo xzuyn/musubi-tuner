@@ -211,7 +211,6 @@ class Offloader:
     def swap_weight_devices(self, block_to_cpu: nn.Module, block_to_cuda: nn.Module):
         if self.cuda_available:
             self.swap_weight_devices_cuda(self.device, block_to_cpu, block_to_cuda)
-            # swap_weight_devices_cuda(self.device, block_to_cpu, block_to_cuda)
         else:
             swap_weight_devices_no_cuda(self.device, block_to_cpu, block_to_cuda)
 
