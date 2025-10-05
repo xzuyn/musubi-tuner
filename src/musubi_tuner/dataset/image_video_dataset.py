@@ -1414,6 +1414,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.shared_epoch = shared_epoch
 
     def set_current_epoch(self, epoch):
+        assert self.shared_epoch is not None, "shared_epoch is None"
         assert self.shared_epoch.value == epoch, "shared_epoch does not match"
 
     def set_max_train_steps(self, max_train_steps):
