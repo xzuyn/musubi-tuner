@@ -1427,6 +1427,7 @@ class BaseDataset(torch.utils.data.Dataset):
         return NotImplementedError
 
     def __getitem__(self, idx):
+        assert self.shared_epoch is not None, "shared_epoch is None"
         epoch = self.shared_epoch.value
         if epoch > self.current_epoch:
             logger.info(f"epoch is incremented. current_epoch: {self.current_epoch}, epoch: {epoch}")
