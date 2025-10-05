@@ -957,17 +957,17 @@ class NetworkTrainer:
                         candidates = torch.tensor(
                             data=[
                                 1.0, 0.75, 0.5, 0.25,
-                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(4),
-                            device=device
-                        )
+                            ],
+                            device=device,
+                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(4)
                     elif "8step" in args.timestep_sampling:
                         candidates = torch.tensor(
                             data=[
                                 1.0, 0.875, 0.75, 0.625,
                                 0.5, 0.375, 0.25, 0.125,
-                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(8),
-                            device=device
-                        )
+                            ],
+                            device=device,
+                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(8)
                     else:
                         candidates = torch.tensor(
                             data=[
@@ -975,9 +975,9 @@ class NetworkTrainer:
                                 0.75, 0.6875, 0.625, 0.5625,
                                 0.5, 0.4375, 0.3750, 0.3125,
                                 0.25, 0.1875, 0.125, 0.0625,
-                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(16),
-                            device=device
-                        )
+                            ],
+                            device=device,
+                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(16)
 
                     t = candidates[torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)]
 
