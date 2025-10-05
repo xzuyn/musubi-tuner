@@ -203,7 +203,7 @@ powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
 
 ### データセット設定
 
-[こちら](./src/musubi_tuner/dataset/dataset_config.md)を参照してください。
+[こちら](./docs/dataset_config.md)を参照してください。
 
 ### 事前キャッシュと学習
 

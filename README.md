@@ -212,7 +212,7 @@ Model download procedures vary by architecture. Please refer to the specific doc
 
 ### Dataset Configuration
 
-Please refer to [dataset configuration guide](./src/musubi_tuner/dataset/dataset_config.md).
+Please refer to [dataset configuration guide](./docs/dataset_config.md).
 
 ### Pre-caching and Training
 
