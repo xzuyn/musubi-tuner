@@ -836,6 +836,12 @@ class NetworkTrainer:
             or args.timestep_sampling == "logsnr"
             or args.timestep_sampling == "qinglong_flux"
             or args.timestep_sampling == "qinglong_qwen"
+            or args.timestep_sampling == "distill_4step"
+            or args.timestep_sampling == "distill_8step"
+            or args.timestep_sampling == "distill_16step"
+            or args.timestep_sampling == "distill_4step_kl"
+            or args.timestep_sampling == "distill_8step_kl"
+            or args.timestep_sampling == "distill_16step_kl"
         ):
 
             def compute_sampling_timesteps(org_timesteps: Optional[torch.Tensor]) -> torch.Tensor:
@@ -939,6 +945,42 @@ class NetworkTrainer:
 
                         t[logsnr_mask2] = t_logsnr2
 
+                elif args.timestep_sampling.startswith("distill"):
+                    # https://github.com/comfyanonymous/ComfyUI/blob/f6b93d41a03081fad3c1a01221eac9c42d6790df/comfy/samplers.py#L500
+                    def kl_optimal_scheduler(n, sigma_min=0.0001, sigma_max=1.0):
+                        adj_idxs = torch.arange(n, dtype=torch.float).div_(n - 1)
+                        sigmas = adj_idxs.new_zeros(n + 1)
+                        sigmas[:-1] = (adj_idxs * math.atan(sigma_min) + (1 - adj_idxs) * math.atan(sigma_max)).tan_()
+                        return sigmas.to(device)
+
+                    if "4step" in args.timestep_sampling:
+                        candidates = torch.tensor(
+                            data=[
+                                1.0, 0.75, 0.5, 0.25,
+                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(4),
+                            device=device
+                        )
+                    elif "8step" in args.timestep_sampling:
+                        candidates = torch.tensor(
+                            data=[
+                                1.0, 0.875, 0.75, 0.625,
+                                0.5, 0.375, 0.25, 0.125,
+                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(8),
+                            device=device
+                        )
+                    else:
+                        candidates = torch.tensor(
+                            data=[
+                                1.0000, 0.9375, 0.875, 0.8125,
+                                0.75, 0.6875, 0.625, 0.5625,
+                                0.5, 0.4375, 0.3750, 0.3125,
+                                0.25, 0.1875, 0.125, 0.0625,
+                            ] if "kl" not in args.timestep_sampling else kl_optimal_scheduler(16),
+                            device=device
+                        )
+
+                    t = candidates[torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)]
+
                 return t  # 0 to 1
 
             t_min = args.min_timestep if args.min_timestep is not None else 0
@@ -1025,10 +1067,13 @@ class NetworkTrainer:
             actual_timesteps, _ = self.get_noisy_model_input_and_timesteps(
                 args, noise, latents, bucketed_timesteps, noise_scheduler, "cpu", torch.float16
             )
-            actual_timesteps = actual_timesteps[:, 0, 0, 0, 0] * 1000
-            for t in actual_timesteps:
-                t = int(t.item())
-                sampled_timesteps[t] += 1
+            # map normalized timesteps in [0,1] to integer indices 0..num_train_timesteps-1 safely
+            num_ts = noise_scheduler.config.num_train_timesteps
+            normalized = actual_timesteps[:, 0, 0, 0, 0]  # still on CPU
+            indices = (normalized * num_ts).clamp(0, num_ts - 1).to(torch.long)
+
+            for t in indices:
+                sampled_timesteps[int(t.item())] += 1
 
         # sample weighting
         sampled_weighting = [0] * noise_scheduler.config.num_train_timesteps
@@ -2600,7 +2645,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "distill_4step", "distill_8step", "distill_16step", "distill_4step_kl", "distill_8step_kl", "distill_16step_kl"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
