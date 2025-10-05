@@ -137,7 +137,7 @@ Musubi Tunerの解説記事執筆や、関連ツールの開発に取り組ん�
 
 - 省メモリに特化
 - Windows対応（Linuxでの動作報告もあります）
-- マルチGPUには対応していません
+- マルチGPU学習（[Accelerate](https://huggingface.co/docs/accelerate/index)を使用）、ドキュメントは後日追加予定
 
 ## インストール
 

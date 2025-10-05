@@ -142,7 +142,7 @@ This approach ensures that you have full control over the instructions given to 
 
 - Memory-efficient implementation
 - Windows compatibility confirmed (Linux compatibility confirmed by community)
-- Multi-GPU support not implemented
+- Multi-GPU training (using [Accelerate](https://huggingface.co/docs/accelerate/index)), documentation will be added later
 
 ## Installation
 
