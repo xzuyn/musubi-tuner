@@ -951,7 +951,7 @@ class NetworkTrainer:
                         adj_idxs = torch.arange(n, dtype=torch.float).div_(n - 1)
                         sigmas = adj_idxs.new_zeros(n + 1)
                         sigmas[:-1] = (adj_idxs * math.atan(sigma_min) + (1 - adj_idxs) * math.atan(sigma_max)).tan_()
-                        return sigmas.to(device)
+                        return sigmas[:-1].to(device)
 
                     if "4step" in args.timestep_sampling:
                         candidates = torch.tensor(
