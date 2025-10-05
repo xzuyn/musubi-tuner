@@ -64,6 +64,13 @@ If you find this project helpful, please consider supporting its development via
 GitHub Discussions Enabled: We've enabled GitHub Discussions for community Q&A, knowledge sharing, and technical information exchange. Please use Issues for bug reports and feature requests, and Discussions for questions and sharing experiences. [Join the conversation →](https://github.com/kohya-ss/musubi-tuner/discussions)
 
 - October 5, 2025
+    - Changed the epoch switching from `collate_fn` to before the start of the DataLoader fetching loop. See [PR #601](https://github.com/kohya-ss/musubi-tuner/pull/601) for more details.
+    - In the previous implementation, the ARB buckets were shuffled after fetching the first data of the epoch. Therefore, the first data of the epoch was fetched in the ARB sorted order of the previous epoch. This caused duplication and omission of data within the epoch.
+    - Each DataSet now shuffles the ARB buckets immediately after detecting a change in the shared epoch in `__getitem__`. This ensures that data is fetched in the new order from the beginning, eliminating duplication and omission.
+    - Since the shuffle timing has been moved forward, the sample order will not be the same as the old implementation even with the same seed.
+    - **Impact on overall training**:
+        - This fix addresses the issue of incorrect fetching of the first sample at epoch boundaries. Since each sample is ultimately used without omission or duplication over multiple epochs, the overall impact on training is minimal. The change primarily enhances "consistency in consumption order within an epoch," and the long-term training behavior remains practically unchanged under the same conditions (※ there may be observable differences in cases of extremely few epochs or early stopping).
+
     - Added a method to specify training options in a configuration file in the [Advanced Configuration documentation](./docs/advanced_config.md#using-configuration-files-to-specify-training-options--設定ファイルを使用した学習オプションの指定). See [PR #630](https://github.com/kohya-ss/musubi-tuner/pull/630).
     - Restructured the documentation. Moved dataset configuration-related documentation to `docs/dataset_config.md`.
 
