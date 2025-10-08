@@ -1931,6 +1931,19 @@ class NetworkTrainer:
         # resume from local or huggingface. accelerator.step is set
         self.resume_from_local_or_hf_if_specified(accelerator, args)  # accelerator.load_state(args.resume)
 
+        if args.fused_backward_pass:
+            for param_group in optimizer.param_groups:
+                for parameter in param_group["params"]:
+                    if parameter.requires_grad:
+                        def create_grad_hook(p_group):
+                            def grad_hook(tensor: torch.Tensor):
+                                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
+                                    accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
+                                optimizer.optimizer.step_param(tensor, p_group)
+                                tensor.grad = None
+                            return grad_hook
+                        parameter.register_post_accumulate_grad_hook(create_grad_hook(param_group))
+
         # epoch数を計算する
         num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
         num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
@@ -2164,21 +2177,25 @@ class NetworkTrainer:
                     loss = loss.mean()  # mean loss over all elements in batch
 
                     accelerator.backward(loss)
-                    if accelerator.sync_gradients:
-                        # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        state = accelerate.PartialState()
-                        if state.distributed_type != accelerate.DistributedType.NO:
-                            for param in network.parameters():
-                                if param.grad is not None:
-                                    param.grad = accelerator.reduce(param.grad, reduction="mean")
 
-                        if args.max_grad_norm != 0.0:
-                            params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
-                            accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                    if not args.fused_backward_pass:
+                        if accelerator.sync_gradients:
+                            # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
+                            state = accelerate.PartialState()
+                            if state.distributed_type != accelerate.DistributedType.NO:
+                                for param in network.parameters():
+                                    if param.grad is not None:
+                                        param.grad = accelerator.reduce(param.grad, reduction="mean")
 
-                    optimizer.step()
-                    lr_scheduler.step()
-                    optimizer.zero_grad(set_to_none=True)
+                            if args.max_grad_norm != 0.0:
+                                params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
+                                accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+
+                        optimizer.step()
+                        lr_scheduler.step()
+                        optimizer.zero_grad(set_to_none=True)
+                    else:
+                        lr_scheduler.step()
 
                 if args.scale_weight_norms:
                     keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
@@ -2483,6 +2500,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         nargs="*",
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
+    parser.add_argument("--fused_backward_pass", action="store_true", help="Use fused backward pass for supported optimizers")
     parser.add_argument("--learning_rate", type=float, default=2.0e-6, help="learning rate / 学習率")
     parser.add_argument(
         "--max_grad_norm",
