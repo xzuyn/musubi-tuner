@@ -828,6 +828,7 @@ class NetworkTrainer:
             or args.timestep_sampling == "distill_4step_kl"
             or args.timestep_sampling == "distill_8step_kl"
             or args.timestep_sampling == "distill_16step_kl"
+            or args.timestep_sampling == "distill_mixed"
         ):
 
             def compute_sampling_timesteps(org_timesteps: Optional[torch.Tensor]) -> torch.Tensor:
@@ -933,37 +934,55 @@ class NetworkTrainer:
 
                 elif args.timestep_sampling.startswith("distill"):
                     # https://github.com/comfyanonymous/ComfyUI/blob/f6b93d41a03081fad3c1a01221eac9c42d6790df/comfy/samplers.py#L500
-                    def kl_optimal_scheduler(n, sigma_min=0.0001, sigma_max=1.0):
+                    def kl_optimal_scheduler(n, sigma_min=0.0001, sigma_max=1.0, to_list=False):
                         adj_idxs = torch.arange(n, dtype=torch.float).div_(n - 1)
                         sigmas = adj_idxs.new_zeros(n + 1)
                         sigmas[:-1] = (adj_idxs * math.atan(sigma_min) + (1 - adj_idxs) * math.atan(sigma_max)).tan_()
-                        return sigmas[:-1].to(device)
+                        return sigmas[:-1].to(device) if not to_list else [float(sigma) for sigma in list(sigmas[:-1])]
+                    def linear_scheduler(n, sigma_min=0.0001, sigma_max=1.0, to_list=False):
+                        sigmas = torch.linspace(sigma_max, sigma_max / n, steps=n, device=device)
+                        return sigmas if not to_list else [float(sigmas) for sigmas in list(sigmas)]
 
                     if "4step" in args.timestep_sampling:
-                        candidates = torch.tensor(
-                            data=[
-                                1.0, 0.75, 0.5, 0.25,
-                            ],
-                            device=device,
-                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(4)
+                        candidates = (
+                            linear_scheduler(4) if "kl" not in args.timestep_sampling
+                            else kl_optimal_scheduler(4)
+                        )
                     elif "8step" in args.timestep_sampling:
+                        candidates = (
+                            linear_scheduler(8) if "kl" not in args.timestep_sampling
+                            else kl_optimal_scheduler(8)
+                        )
+                    elif "16step" in args.timestep_sampling:
+                        candidates = (
+                            linear_scheduler(16) if "kl" not in args.timestep_sampling
+                            else kl_optimal_scheduler(16)
+                        )
+                    elif "mixed" in args.timestep_sampling:
                         candidates = torch.tensor(
-                            data=[
-                                1.0, 0.875, 0.75, 0.625,
-                                0.5, 0.375, 0.25, 0.125,
-                            ],
+                            data=(
+                                linear_scheduler(4, to_list=True)
+                                + linear_scheduler(8, to_list=True)
+                                + linear_scheduler(16, to_list=True)
+                                + linear_scheduler(20, to_list=True)
+                                + linear_scheduler(25, to_list=True)
+                                + linear_scheduler(32, to_list=True)
+                                + linear_scheduler(50, to_list=True)
+                                + linear_scheduler(64, to_list=True)
+                                + kl_optimal_scheduler(4, to_list=True)
+                                + kl_optimal_scheduler(8, to_list=True)
+                                + kl_optimal_scheduler(16, to_list=True)
+                                + kl_optimal_scheduler(20, to_list=True)
+                                + kl_optimal_scheduler(25, to_list=True)
+                                + kl_optimal_scheduler(32, to_list=True)
+                                + kl_optimal_scheduler(50, to_list=True)
+                                + kl_optimal_scheduler(64, to_list=True)
+                            ),
                             device=device,
-                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(8)
+                        )
                     else:
-                        candidates = torch.tensor(
-                            data=[
-                                1.0000, 0.9375, 0.875, 0.8125,
-                                0.75, 0.6875, 0.625, 0.5625,
-                                0.5, 0.4375, 0.3750, 0.3125,
-                                0.25, 0.1875, 0.125, 0.0625,
-                            ],
-                            device=device,
-                        ) if "kl" not in args.timestep_sampling else kl_optimal_scheduler(16)
+                        print("bad")
+                        exit()
 
                     t = candidates[torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)]
 
@@ -2750,7 +2769,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--timestep_sampling",
-        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "distill_4step", "distill_8step", "distill_16step", "distill_4step_kl", "distill_8step_kl", "distill_16step_kl"],
+        choices=["sigma", "uniform", "sigmoid", "shift", "flux_shift", "qwen_shift", "logsnr", "qinglong_flux", "qinglong_qwen", "distill_4step", "distill_8step", "distill_16step", "distill_4step_kl", "distill_8step_kl", "distill_16step_kl", "distill_mixed"],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
