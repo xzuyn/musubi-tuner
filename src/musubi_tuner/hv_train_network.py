@@ -959,25 +959,27 @@ class NetworkTrainer:
                             else kl_optimal_scheduler(16)
                         )
                     elif "mixed" in args.timestep_sampling:
+                        mixed_list = (
+                            linear_scheduler(4, to_list=True)
+                            + linear_scheduler(8, to_list=True)
+                            + linear_scheduler(16, to_list=True)
+                            + linear_scheduler(20, to_list=True)
+                            + linear_scheduler(25, to_list=True)
+                            + linear_scheduler(32, to_list=True)
+                            + linear_scheduler(50, to_list=True)
+                            + linear_scheduler(64, to_list=True)
+                            + kl_optimal_scheduler(4, to_list=True)
+                            + kl_optimal_scheduler(8, to_list=True)
+                            + kl_optimal_scheduler(16, to_list=True)
+                            + kl_optimal_scheduler(20, to_list=True)
+                            + kl_optimal_scheduler(25, to_list=True)
+                            + kl_optimal_scheduler(32, to_list=True)
+                            + kl_optimal_scheduler(50, to_list=True)
+                            + kl_optimal_scheduler(64, to_list=True)
+                        )
+                        random.shuffle(mixed_list)
                         candidates = torch.tensor(
-                            data=(
-                                linear_scheduler(4, to_list=True)
-                                + linear_scheduler(8, to_list=True)
-                                + linear_scheduler(16, to_list=True)
-                                + linear_scheduler(20, to_list=True)
-                                + linear_scheduler(25, to_list=True)
-                                + linear_scheduler(32, to_list=True)
-                                + linear_scheduler(50, to_list=True)
-                                + linear_scheduler(64, to_list=True)
-                                + kl_optimal_scheduler(4, to_list=True)
-                                + kl_optimal_scheduler(8, to_list=True)
-                                + kl_optimal_scheduler(16, to_list=True)
-                                + kl_optimal_scheduler(20, to_list=True)
-                                + kl_optimal_scheduler(25, to_list=True)
-                                + kl_optimal_scheduler(32, to_list=True)
-                                + kl_optimal_scheduler(50, to_list=True)
-                                + kl_optimal_scheduler(64, to_list=True)
-                            ),
+                            data=mixed_list,
                             device=device,
                         )
                     else:
