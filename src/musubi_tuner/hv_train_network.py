@@ -1979,11 +1979,17 @@ class NetworkTrainer:
                 for parameter in param_group["params"]:
                     if parameter.requires_grad:
                         def create_grad_hook(p_group):
-                            def grad_hook(tensor: torch.Tensor):
-                                if accelerator.sync_gradients and args.max_grad_norm != 0.0:
-                                    accelerator.clip_grad_norm_(tensor, args.max_grad_norm)
-                                optimizer.optimizer.step_param(tensor, p_group)
-                                tensor.grad = None
+                            def grad_hook(p):
+                                if accelerator.sync_gradients and args.max_grad_norm != 0.0 and p.grad is not None and p.ndim >= 2:
+                                    # https://arxiv.org/abs/2102.06171
+                                    p_norm = p.detach().norm().clamp(min=1e-3)
+                                    g_norm = p.grad.detach().norm()
+                                    max_g_norm = p_norm * args.max_grad_norm
+                                    if g_norm > max_g_norm:
+                                        scale_factor = max_g_norm / g_norm
+                                        p.grad.detach().mul_(scale_factor)
+                                optimizer.optimizer.step_param(p, p_group)
+                                p.grad = None
                             return grad_hook
                         parameter.register_post_accumulate_grad_hook(create_grad_hook(param_group))
 
