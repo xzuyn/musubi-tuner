@@ -2189,30 +2189,61 @@ class NetworkTrainer:
 
                     latents = self.scale_shift_latents(latents)
 
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
+                    if args.n_timesteps_per_step <= 1:
+                        # Sample noise that we'll add to the latents
+                        noise = torch.randn_like(latents)
 
-                    # calculate model input and timesteps
-                    noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                        args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
-                    )
+                        # calculate model input and timesteps
+                        noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                            args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+                        )
 
-                    weighting = compute_loss_weighting_for_sd3(
-                        args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
-                    )
+                        weighting = compute_loss_weighting_for_sd3(
+                            args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
+                        )
 
-                    model_pred, target = self.call_dit(
-                        args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
-                    )
-                    loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+                        model_pred, target = self.call_dit(
+                            args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
+                        )
+                        loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
 
-                    if weighting is not None:
-                        loss = loss * weighting
-                    # loss = loss.mean([1, 2, 3])
-                    # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
-                    # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
+                        if weighting is not None:
+                            loss = loss * weighting
+                        # loss = loss.mean([1, 2, 3])
+                        # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
+                        # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-                    loss = loss.mean()  # mean loss over all elements in batch
+                        loss = loss.mean()  # mean loss over all elements in batch
+                    else:
+                        total_loss = 0.0
+                        batch_copy = batch.copy()
+                        for _ in range(args.n_timesteps_per_step):
+                            # Sample noise that we'll add to the latents
+                            noise = torch.randn_like(latents)
+
+                            # calculate model input and timesteps
+                            noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                                args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+                            )
+
+                            weighting = compute_loss_weighting_for_sd3(
+                                args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
+                            )
+
+                            model_pred, target = self.call_dit(
+                                args, accelerator, transformer, latents, batch_copy, noise, noisy_model_input, timesteps, network_dtype
+                            )
+                            loss_i = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+
+                            if weighting is not None:
+                                loss_i = loss_i * weighting
+                            # loss_i = loss_i.mean([1, 2, 3])
+                            # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
+                            # loss = self.post_process_loss(loss_i, args, timesteps, noise_scheduler)
+
+                            total_loss += loss_i.mean()  # add mean loss over all elements in batch to total loss
+
+                        loss = total_loss / float(args.n_timesteps_per_step)
 
                     accelerator.backward(loss)
                     if accelerator.sync_gradients:
@@ -2583,6 +2614,19 @@ def setup_parser_common() -> argparse.ArgumentParser:
         default=None,
         nargs="*",
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
+    )
+    parser.add_argument(
+        "--n_timesteps_per_step",
+        default=1,
+        type=int,
+        help="Compute loss over multiple timesteps instead of a single timestep every step. This applies to gradient accumulation steps as well.\n"
+             "BS1GA1 + n_timesteps_per_step=1 would result in computing loss 1 time every step. Every step would see 1 timestep.\n"
+             "BS1GA1 + n_timesteps_per_step=2 would result in computing loss 2 times every step. Every step would see 2 timesteps.\n"
+             "BS1GA2 + n_timesteps_per_step=2 would result in computing loss 4 times every step. Every step would see 4 timesteps.\n"
+             "BS1GA2 + n_timesteps_per_step=4 would result in computing loss 8 times every step. Every step would see 8 timesteps.\n"
+             "BS1GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 16 timesteps.\n"
+             "BS2GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 32 timesteps.\n"
+             "BS4GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 64 timesteps.",
     )
     parser.add_argument("--learning_rate", type=float, default=2.0e-6, help="learning rate / 学習率")
     parser.add_argument(
