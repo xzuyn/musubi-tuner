@@ -2214,6 +2214,7 @@ class NetworkTrainer:
                         # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
                         loss = loss.mean()  # mean loss over all elements in batch
+                        accelerator.backward(loss)
                     else:
                         total_loss = 0.0
                         batch_copy = batch.copy()
@@ -2241,11 +2242,13 @@ class NetworkTrainer:
                             # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
                             # loss = self.post_process_loss(loss_i, args, timesteps, noise_scheduler)
 
-                            total_loss += loss_i.mean()  # add mean loss over all elements in batch to total loss
+                            current_loss = loss_i.mean()  # mean loss over all elements in batch
+                            scaled_loss = current_loss / float(args.n_timesteps_per_step)
+                            accelerator.backward(scaled_loss)
+                            total_loss += current_loss.detach().item()
 
-                        loss = total_loss / float(args.n_timesteps_per_step)
+                        loss = torch.tensor(total_loss / args.n_timesteps_per_step, device=accelerator.device)
 
-                    accelerator.backward(loss)
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                         state = accelerate.PartialState()
