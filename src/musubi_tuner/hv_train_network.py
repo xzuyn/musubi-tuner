@@ -942,12 +942,12 @@ class NetworkTrainer:
                         A1, B1 = 8.73809524e-05, 1.89833333
                         A2, B2 = 0.00016927, 0.45666666
                         def flux2_scheduler(num_steps, image_seq_len):
-                            if image_seq_len > 4300:  # width*height > 1049*1049 | only A2, B2 are used
-                                mu = float(A2 * image_seq_len + B2)
-                            else:                                              # | A1, A2, B1, B2 are all used
-                                m_10 =  A1 * image_seq_len + B1                # | optimal mu for 10 steps
-                                m_200 = A2 * image_seq_len + B2                # | optimal mu for 200 steps
-                                a = (m_200 - m_10) / 190.0
+                            if image_seq_len > 4300:  # width*height > 1049*1049
+                                mu = float(A2 * image_seq_len + B2)  # optimal μ for 200 steps
+                            else:
+                                m_10 =  A1 * image_seq_len + B1      # optimal μ for 10 steps
+                                m_200 = A2 * image_seq_len + B2      # optimal μ for 200 steps
+                                a = (m_200 - m_10) / 190.0           # slope between 10 and 200 steps
                                 mu = float(a * num_steps + (m_200 - 200.0 * a))
                             return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
 
