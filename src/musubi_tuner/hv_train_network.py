@@ -951,7 +951,7 @@ class NetworkTrainer:
                             return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
 
                         mixed_list = []
-                        for n in range(4, 101):  # all sigmas from all step counts from 4-100
+                        for n in range(10, 101):  # all sigmas from all step counts from 10-100
                             mixed_list.extend(flux2_scheduler(n, seq_len))
                         mixed_list = list(set(mixed_list))  # keep only unique sigmas
                         random.shuffle(mixed_list)
