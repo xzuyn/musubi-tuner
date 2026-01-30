@@ -942,11 +942,12 @@ class NetworkTrainer:
                         A1, B1 = 8.73809524e-05, 1.89833333
                         A2, B2 = 0.00016927, 0.45666666
                         def flux2_scheduler(num_steps, image_seq_len):
-                            if image_seq_len > 4300:
+                            if image_seq_len > 4300:  # width*height > 1049*1049 | only A2, B2 are used
                                 mu = float(A2 * image_seq_len + B2)
-                            else:
-                                m_200 = A2 * image_seq_len + B2
-                                a = (m_200 - (A1 * image_seq_len + B1)) / 190.0
+                            else:                                              # | A1, A2, B1, B2 are all used
+                                m_10 =  A1 * image_seq_len + B1                # | optimal mu for 10 steps
+                                m_200 = A2 * image_seq_len + B2                # | optimal mu for 200 steps
+                                a = (m_200 - m_10) / 190.0
                                 mu = float(a * num_steps + (m_200 - 200.0 * a))
                             return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
 
@@ -962,10 +963,13 @@ class NetworkTrainer:
                     else:
                         candidates = self.flux2_candidates_cache[seq_len]
 
+                    # pick a random center sigma for each item in the batch
                     centers = candidates[
                         torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)
                     ]
+                    # bandwidth based on the spread of candidates, scaled by number of candidates
                     bandwidth = (candidates.max() - candidates.min()) / (len(candidates) / 4)
+                    # sample final timesteps by adding gaussian noise to centers
                     t = centers + torch.randn(batch_size, device=device) * bandwidth
                     t = torch.clamp(t, min=0.001, max=0.999)
 
