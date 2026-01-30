@@ -1991,6 +1991,7 @@ class NetworkTrainer:
         )
         # accelerator.print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
         accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
+        accelerator.print(f"  timesteps per step / ステップあたりのタイムステップ数 = {args.n_timesteps_per_step}")
         accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
         # TODO refactor metadata creation and move to util
@@ -2005,6 +2006,7 @@ class NetworkTrainer:
             "ss_gradient_checkpointing": args.gradient_checkpointing,
             "ss_gradient_checkpointing_cpu_offload": args.gradient_checkpointing_cpu_offload,
             "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "ss_n_timesteps_per_step": args.n_timesteps_per_step,
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
             "ss_lr_scheduler": args.lr_scheduler,
@@ -2218,10 +2220,9 @@ class NetworkTrainer:
                     else:
                         total_loss = 0.0
                         batch_copy = batch.copy()
+                        # Sample noise that we'll add to the latents
+                        noise = torch.randn_like(latents)
                         for _ in range(args.n_timesteps_per_step):
-                            # Sample noise that we'll add to the latents
-                            noise = torch.randn_like(latents)
-
                             # calculate model input and timesteps
                             noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
                                 args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
