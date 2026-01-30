@@ -938,7 +938,7 @@ class NetworkTrainer:
                         self.flux2_candidates_cache = {}
 
                     if seq_len not in self.flux2_candidates_cache:
-                        # modified from: https://github.com/Comfy-Org/ComfyUI/blob/bbe2c13a7075bcf4de3b6744f96d84d12c334350/comfy_extras/nodes_flux.py#L182C1-L231C37
+                        # modified from: https://github.com/black-forest-labs/flux2/blob/b56ac61450f56ea7d32374c2fa54e77a262067f6/src/flux2/sampling.py#L240C1-L266C21
                         A1, B1 = 8.73809524e-05, 1.89833333
                         A2, B2 = 0.00016927, 0.45666666
                         def flux2_scheduler(num_steps, image_seq_len):
