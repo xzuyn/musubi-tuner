@@ -824,6 +824,7 @@ class NetworkTrainer:
             or args.timestep_sampling == "qinglong_flux"
             or args.timestep_sampling == "qinglong_qwen"
             or args.timestep_sampling == "flux2_shift"
+            or args.timestep_sampling == "custom_flux2"
         ):
 
             def compute_sampling_timesteps(org_timesteps: Optional[torch.Tensor]) -> torch.Tensor:
@@ -928,6 +929,38 @@ class NetworkTrainer:
                         t_logsnr2 = torch.sigmoid(-logsnr2 / 2)
 
                         t[logsnr_mask2] = t_logsnr2
+
+                elif args.timestep_sampling == "custom_flux2":
+                    # modified from: https://github.com/Comfy-Org/ComfyUI/blob/bbe2c13a7075bcf4de3b6744f96d84d12c334350/comfy_extras/nodes_flux.py#L182C1-L231C37
+                    A1, B1 = 8.73809524e-05, 1.89833333
+                    A2, B2 = 0.00016927, 0.45666666
+                    def flux2_scheduler(num_steps, image_seq_len):
+                        if image_seq_len > 4300:
+                            mu = float(A2 * image_seq_len + B2)
+                        else:
+                            m_200 = A2 * image_seq_len + B2
+                            a = (m_200 - (A1 * image_seq_len + B1)) / 190.0
+                            mu = float(a * num_steps + (m_200 - 200.0 * a))
+
+                        return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
+
+                    height, width = latents.shape[-2:]
+                    seq_len = round(width * height / (16 * 16))
+
+                    mixed_list = []
+                    for n in range(4, 101):  # all sigmas from all step counts from 4-100
+                        mixed_list.extend(flux2_scheduler(n, seq_len))
+                    mixed_list = list(set(mixed_list))  # keep only unique sigmas
+                    random.shuffle(mixed_list)
+
+                    candidates = torch.tensor(data=mixed_list, device=device)
+                    candidates = candidates[(candidates >= 0.001) & (candidates <= 0.999)]
+                    centers = candidates[
+                        torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)
+                    ]
+                    bandwidth = (candidates.max() - candidates.min()) / (len(candidates) / 4)
+                    t = centers + torch.randn(batch_size, device=device) * bandwidth
+                    t = torch.clamp(t, min=0.001, max=0.999)
 
                 return t  # 0 to 1
 
@@ -2720,6 +2753,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
             "logsnr",
             "qinglong_flux",
             "qinglong_qwen",
+            "custom_flux2",
         ],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
