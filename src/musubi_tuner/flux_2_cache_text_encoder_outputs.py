@@ -45,7 +45,10 @@ def main():
     blueprint = blueprint_generator.generate(user_config, args, architecture=model_version_info.architecture)
     train_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group)
 
-    datasets = train_dataset_group.datasets
+    datasets = list(train_dataset_group.datasets)
+    if blueprint.eval_dataset_group is not None:
+        eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.eval_dataset_group)
+        datasets.extend(eval_dataset_group.datasets)
 
     # prepare cache files and paths: all_cache_files_for_dataset = exisiting cache files, all_cache_paths_for_dataset = all cache paths in the dataset
     all_cache_files_for_dataset, all_cache_paths_for_dataset = cache_text_encoder_outputs.prepare_cache_files_and_paths(datasets)
