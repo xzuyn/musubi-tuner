@@ -101,6 +101,10 @@ def main():
 
     datasets = train_dataset_group.datasets
 
+    if blueprint.eval_dataset_group is not None:
+        eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.eval_dataset_group)
+        datasets.extend(eval_dataset_group.datasets)
+
     if args.debug_mode is not None:
         cache_latents.show_datasets(
             datasets, args.debug_mode, args.console_width, args.console_back, args.console_num_images, fps=16
