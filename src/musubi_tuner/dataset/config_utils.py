@@ -89,6 +89,7 @@ class DatasetGroupBlueprint:
 @dataclass
 class Blueprint:
     dataset_group: DatasetGroupBlueprint
+    eval_dataset_group: Optional[DatasetGroupBlueprint] = None
 
 
 class ConfigSanitizer:
@@ -174,6 +175,7 @@ class ConfigSanitizer:
             {
                 "general": self.general_schema,
                 "datasets": [self.dataset_schema],
+                voluptuous.Optional("eval_datasets"): [self.dataset_schema],
             }
         )
         self.argparse_schema = self.__merge_dict(
@@ -241,7 +243,24 @@ class BlueprintGenerator:
 
         dataset_group_blueprint = DatasetGroupBlueprint(dataset_blueprints)
 
-        return Blueprint(dataset_group_blueprint)
+        eval_dataset_blueprints = []
+        for dataset_config in sanitized_user_config.get("eval_datasets", []):
+            is_image_dataset = "image_directory" in dataset_config or "image_jsonl_file" in dataset_config
+            if is_image_dataset:
+                dataset_params_klass = ImageDatasetParams
+            else:
+                dataset_params_klass = VideoDatasetParams
+
+            params = self.generate_params_by_fallbacks(
+                dataset_params_klass, [dataset_config, general_config, argparse_config, runtime_params]
+            )
+            eval_dataset_blueprints.append(DatasetBlueprint(is_image_dataset, params))
+
+        eval_dataset_group_blueprint = None
+        if len(eval_dataset_blueprints) > 0:
+            eval_dataset_group_blueprint = DatasetGroupBlueprint(eval_dataset_blueprints)
+
+        return Blueprint(dataset_group_blueprint, eval_dataset_group_blueprint)
 
     @staticmethod
     def generate_params_by_fallbacks(param_klass, fallbacks: Sequence[dict]):
@@ -413,6 +432,12 @@ def load_user_config(file: str) -> dict:
         for idx, dataset_config in enumerate(datasets_config):
             if isinstance(dataset_config, dict):
                 normalize_deprecated_keys(dataset_config, f"datasets[{idx}]")
+
+    eval_datasets_config = config.get("eval_datasets", [])
+    if isinstance(eval_datasets_config, list):
+        for idx, dataset_config in enumerate(eval_datasets_config):
+            if isinstance(dataset_config, dict):
+                normalize_deprecated_keys(dataset_config, f"eval_datasets[{idx}]")
 
     return config
 
