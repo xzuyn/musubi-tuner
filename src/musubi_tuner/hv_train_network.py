@@ -1137,10 +1137,6 @@ class NetworkTrainer:
                             eval_timestep=val_ts
                         )
 
-                        eval_weighting = compute_loss_weighting_for_sd3(
-                            args.weighting_scheme, noise_scheduler, eval_timesteps, accelerator.device, dit_dtype
-                        )
-
                         eval_pred, eval_target = self.call_dit(
                             args,
                             accelerator,
@@ -1154,9 +1150,6 @@ class NetworkTrainer:
                         )
 
                         eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
-
-                        if eval_weighting is not None:
-                            eval_loss = eval_loss * eval_weighting
 
                         total_eval_loss += eval_loss.mean().item()
                         total_eval_steps += 1
