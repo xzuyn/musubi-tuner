@@ -1088,6 +1088,92 @@ class NetworkTrainer:
                 line += "#" * int(w / max_weighting * CONSOLE_WIDTH)
                 print(line)
 
+    def evaluate(self, accelerator, args, steps, transformer, eval_dataloader, noise_scheduler, dit_dtype, network_dtype):
+        if eval_dataloader is None:
+            return None
+
+        logger.info(f"running evaluation at step / 評価 ステップ: {steps}")
+
+        # Save random state to restore later for training reproducibility
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = None
+        try:
+            cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        except Exception:
+            pass
+
+        avg_eval_loss = 0.0
+
+        try:
+            # Set seed for consistent evaluation across entire run
+            torch.manual_seed(42)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(42)
+
+            total_eval_loss = 0.0
+            total_eval_steps = 0
+
+            if args.gradient_checkpointing:
+                transformer.eval()
+
+            for eval_batch in tqdm(eval_dataloader, desc="Evaluating", disable=not accelerator.is_local_main_process):
+                with torch.no_grad():
+                    eval_latents = eval_batch["latents"]
+                    eval_latents = self.scale_shift_latents(eval_latents)
+                    eval_noise = torch.randn_like(eval_latents)
+
+                    # TODO: add arg for test_timesteps
+                    test_timesteps = [200.0, 400.0, 600.0, 800.0]
+                    for val_ts in test_timesteps:
+                        eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
+                            args=args,
+                            noise=eval_noise,
+                            latents=eval_latents,
+                            timesteps=eval_batch["timesteps"],
+                            noise_scheduler=noise_scheduler,
+                            device=accelerator.device,
+                            dtype=dit_dtype,
+                            for_eval=True,
+                            eval_timestep=val_ts
+                        )
+
+                        eval_weighting = compute_loss_weighting_for_sd3(
+                            args.weighting_scheme, noise_scheduler, eval_timesteps, accelerator.device, dit_dtype
+                        )
+
+                        eval_pred, eval_target = self.call_dit(
+                            args,
+                            accelerator,
+                            transformer,
+                            eval_latents,
+                            eval_batch,
+                            eval_noise,
+                            eval_noisy_input,
+                            eval_timesteps,
+                            network_dtype,
+                        )
+
+                        eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
+
+                        if eval_weighting is not None:
+                            eval_loss = eval_loss * eval_weighting
+
+                        total_eval_loss += eval_loss.mean().item()
+                        total_eval_steps += 1
+
+            avg_eval_loss = total_eval_loss / total_eval_steps if total_eval_steps > 0 else 0.0
+
+        finally:
+            # Restore training state
+            if args.gradient_checkpointing:
+                transformer.train()
+
+            torch.set_rng_state(rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state(cuda_rng_state)
+
+        return avg_eval_loss
+
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
         if not should_sample_images(args, steps, epoch):
@@ -2197,7 +2283,7 @@ class NetworkTrainer:
             optimizer_eval_fn()
             self.sample_images(accelerator, args, 0, global_step, vae, transformer, sample_parameters, dit_dtype)
             optimizer_train_fn()
-        if len(accelerator.trackers) > 0:
+        if len(accelerator.trackers) > 0 and not (args.eval_every_n_steps is not None and eval_dataloader is not None):
             # log empty object to commit the sample images to wandb
             accelerator.log({}, step=0)
 
@@ -2213,6 +2299,14 @@ class NetworkTrainer:
         clean_memory_on_device(accelerator.device)
 
         optimizer_train_fn()  # Set training mode
+
+        if args.eval_every_n_steps is not None and eval_dataloader is not None:
+            avg_eval_loss_init = self.evaluate(
+                accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler,
+                dit_dtype, network_dtype
+            )
+            accelerator.log({"loss/eval": avg_eval_loss_init}, step=0)
+            progress_bar.set_postfix(**{"eval_loss": avg_eval_loss_init})
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
@@ -2299,69 +2393,10 @@ class NetworkTrainer:
                         optimizer_eval_fn()
 
                         if should_eval:
-                            rng_state = torch.get_rng_state()
-                            cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
-
-                            try:
-                                torch.manual_seed(42)
-                                if torch.cuda.is_available():
-                                    torch.cuda.manual_seed(42)
-
-                                total_eval_loss = 0.0
-                                total_eval_steps = 0
-
-                                if args.gradient_checkpointing:
-                                    transformer.eval()
-
-                                for eval_batch in tqdm(eval_dataloader, desc="Evaluating", disable=not accelerator.is_local_main_process):
-                                    with torch.no_grad():
-                                        eval_latents = eval_batch["latents"]
-                                        eval_latents = self.scale_shift_latents(eval_latents)
-                                        eval_noise = torch.randn_like(eval_latents)
-
-                                        # TODO: do more than just timestep 500
-                                        eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
-                                            args=args,
-                                            noise=eval_noise,
-                                            latents=eval_latents,
-                                            timesteps=eval_batch["timesteps"],
-                                            noise_scheduler=noise_scheduler,
-                                            device=accelerator.device,
-                                            dtype=dit_dtype,
-                                            for_eval=True,
-                                            eval_timestep=500.0
-                                        )
-
-                                        eval_weighting = compute_loss_weighting_for_sd3(
-                                            args.weighting_scheme, noise_scheduler, eval_timesteps, accelerator.device, dit_dtype
-                                        )
-
-                                        eval_pred, eval_target = self.call_dit(
-                                            args,
-                                            accelerator,
-                                            transformer,
-                                            eval_latents,
-                                            eval_batch,
-                                            eval_noise,
-                                            eval_noisy_input,
-                                            eval_timesteps,
-                                            network_dtype,
-                                        )
-
-                                        eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
-                                        if eval_weighting is not None:
-                                            eval_loss = eval_loss * eval_weighting
-
-                                        total_eval_loss += eval_loss.mean().item()
-                                        total_eval_steps += 1
-
-                                avg_eval_loss = total_eval_loss / total_eval_steps if total_eval_steps > 0 else 0.0
-                            finally:
-                                if args.gradient_checkpointing:
-                                    transformer.train()
-                                torch.set_rng_state(rng_state)
-                                if cuda_rng_state is not None:
-                                    torch.cuda.set_rng_state(cuda_rng_state)
+                            avg_eval_loss = self.evaluate(
+                                accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler,
+                                dit_dtype, network_dtype
+                            )
 
                         if should_sampling:
                             self.sample_images(accelerator, args, None, global_step, vae, transformer, sample_parameters, dit_dtype)
