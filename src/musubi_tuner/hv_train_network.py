@@ -392,9 +392,13 @@ class NetworkTrainer:
         keys_scaled=None,
         mean_norm=None,
         maximum_norm=None,
+        eval_loss=None,
     ):
         network_train_unet_only = True
         logs = {"loss/current": current_loss, "loss/average": avr_loss}
+
+        if eval_loss is not None:
+            logs["loss/eval"] = eval_loss
 
         if keys_scaled is not None:
             logs["max_norm/keys_scaled"] = keys_scaled
@@ -776,8 +780,18 @@ class NetworkTrainer:
         noise_scheduler: FlowMatchDiscreteScheduler,
         device: torch.device,
         dtype: torch.dtype,
+        for_eval: Optional[bool] = False,
+        eval_timestep: Optional[float] = 500.0,
     ):
         batch_size = noise.shape[0]
+
+        if for_eval:
+            t_val = (eval_timestep if eval_timestep is not None else 500.0) / 1000.0
+            t = torch.full((batch_size,), t_val, device=device, dtype=dtype)
+            model_timesteps = t * 1000.0 + 1.0
+            t_view = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
+            noisy_model_input = (1 - t_view) * latents + t_view * noise
+            return noisy_model_input, model_timesteps
 
         if timesteps is not None:
             timesteps = torch.tensor(timesteps, device=device)
@@ -1706,8 +1720,22 @@ class NetworkTrainer:
                 " / データセットに学習データがありません。latent/Text Encoderキャッシュを事前に作成したか確認してください"
             )
 
+        eval_dataset_group = None
+        if blueprint.eval_dataset_group is not None:
+            eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(
+                blueprint.eval_dataset_group,
+                training=True,
+                num_timestep_buckets=self.num_timestep_buckets,
+                shared_epoch=current_epoch
+            )
+
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = collator_class(current_epoch, ds_for_collator)
+
+        eval_collator = None
+        if eval_dataset_group is not None:
+            ds_for_eval_collator = eval_dataset_group if args.max_data_loader_n_workers == 0 else None
+            eval_collator = collator_class(current_epoch, ds_for_eval_collator)
 
         # prepare accelerator
         logger.info("preparing accelerator")
@@ -1875,6 +1903,17 @@ class NetworkTrainer:
             persistent_workers=args.persistent_data_loader_workers,
         )
 
+        eval_dataloader = None
+        if eval_dataset_group is not None:
+            eval_dataloader = torch.utils.data.DataLoader(
+                eval_dataset_group,
+                batch_size=1,
+                shuffle=False,
+                collate_fn=eval_collator,
+                num_workers=n_workers,
+                persistent_workers=args.persistent_data_loader_workers,
+            )
+
         # calculate max_train_steps
         if args.max_train_epochs is not None:
             args.max_train_steps = args.max_train_epochs * math.ceil(
@@ -1926,6 +1965,10 @@ class NetworkTrainer:
             transformer.__dict__["_orig_mod"] = transformer  # for annoying accelerator checks
 
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+
+        if eval_dataloader is not None:
+            eval_dataloader = accelerator.prepare(eval_dataloader)
+
         training_model = network
 
         if args.gradient_checkpointing:
@@ -2249,9 +2292,77 @@ class NetworkTrainer:
                     # to avoid calling optimizer_eval_fn() too frequently, we call it only when we need to sample images or save the model
                     should_sampling = should_sample_images(args, global_step, epoch=None)
                     should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
+                    should_eval = args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0 and eval_dataloader is not None
 
-                    if should_sampling or should_saving:
+                    avg_eval_loss = None
+                    if should_sampling or should_saving or should_eval:
                         optimizer_eval_fn()
+
+                        if should_eval:
+                            rng_state = torch.get_rng_state()
+                            cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+
+                            try:
+                                torch.manual_seed(42)
+                                if torch.cuda.is_available():
+                                    torch.cuda.manual_seed(42)
+
+                                total_eval_loss = 0.0
+                                total_eval_steps = 0
+
+                                if args.gradient_checkpointing:
+                                    transformer.eval()
+
+                                for eval_batch in tqdm(eval_dataloader, desc="Evaluating", disable=not accelerator.is_local_main_process):
+                                    with torch.no_grad():
+                                        eval_latents = eval_batch["latents"]
+                                        eval_latents = self.scale_shift_latents(eval_latents)
+                                        eval_noise = torch.randn_like(eval_latents)
+
+                                        # TODO: do more than just timestep 500
+                                        eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
+                                            args=args,
+                                            noise=eval_noise,
+                                            latents=eval_latents,
+                                            timesteps=eval_batch["timesteps"],
+                                            noise_scheduler=noise_scheduler,
+                                            device=accelerator.device,
+                                            dtype=dit_dtype,
+                                            for_eval=True,
+                                            eval_timestep=500.0
+                                        )
+
+                                        eval_weighting = compute_loss_weighting_for_sd3(
+                                            args.weighting_scheme, noise_scheduler, eval_timesteps, accelerator.device, dit_dtype
+                                        )
+
+                                        eval_pred, eval_target = self.call_dit(
+                                            args,
+                                            accelerator,
+                                            transformer,
+                                            eval_latents,
+                                            eval_batch,
+                                            eval_noise,
+                                            eval_noisy_input,
+                                            eval_timesteps,
+                                            network_dtype,
+                                        )
+
+                                        eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
+                                        if eval_weighting is not None:
+                                            eval_loss = eval_loss * eval_weighting
+
+                                        total_eval_loss += eval_loss.mean().item()
+                                        total_eval_steps += 1
+
+                                avg_eval_loss = total_eval_loss / total_eval_steps if total_eval_steps > 0 else 0.0
+                            finally:
+                                if args.gradient_checkpointing:
+                                    transformer.train()
+                                torch.set_rng_state(rng_state)
+                                if cuda_rng_state is not None:
+                                    torch.cuda.set_rng_state(cuda_rng_state)
+
                         if should_sampling:
                             self.sample_images(accelerator, args, None, global_step, vae, transformer, sample_parameters, dit_dtype)
 
@@ -2274,14 +2385,18 @@ class NetworkTrainer:
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
+
+                if avg_eval_loss is not None:
+                    logs["eval_loss"] = avg_eval_loss
 
                 if args.scale_weight_norms:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                else:
+                    progress_bar.set_postfix(**logs)
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
+                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm, avg_eval_loss
                     )
                     accelerator.log(logs, step=global_step)
 
@@ -2895,6 +3010,11 @@ def setup_parser_common() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="save checkpoint every N steps / 学習中のモデルを指定ステップごとに保存する",
+    )
+    parser.add_argument(
+        "--eval_every_n_steps",
+        type=int,
+        default=None,
     )
     parser.add_argument(
         "--save_last_n_epochs",
