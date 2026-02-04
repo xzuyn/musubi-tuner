@@ -1102,16 +1102,13 @@ class NetworkTrainer:
         except Exception:
             pass
 
-        avg_eval_loss = 0.0
+        eval_losses = []
 
         try:
             # Set seed for consistent evaluation across entire run
             torch.manual_seed(42)
             if torch.cuda.is_available():
                 torch.cuda.manual_seed(42)
-
-            total_eval_loss = 0.0
-            total_eval_steps = 0
 
             if args.gradient_checkpointing:
                 transformer.eval()
@@ -1150,11 +1147,7 @@ class NetworkTrainer:
                         )
 
                         eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
-
-                        total_eval_loss += eval_loss.mean().item()
-                        total_eval_steps += 1
-
-            avg_eval_loss = total_eval_loss / total_eval_steps if total_eval_steps > 0 else 0.0
+                        eval_losses.append(eval_loss.mean().item())
 
         finally:
             # Restore training state
@@ -1165,7 +1158,7 @@ class NetworkTrainer:
             if cuda_rng_state is not None:
                 torch.cuda.set_rng_state(cuda_rng_state)
 
-        return avg_eval_loss
+        return sum(eval_losses) / len(eval_losses) if len(eval_losses) > 0 else 0.0
 
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
