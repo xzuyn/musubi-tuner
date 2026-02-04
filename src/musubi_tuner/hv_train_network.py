@@ -1991,7 +1991,7 @@ class NetworkTrainer:
         )
         # accelerator.print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
         accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
-        accelerator.print(f"  timesteps per step / ステップあたりのタイムステップ数 = {args.n_timesteps_per_step}")
+        accelerator.print(f"  timesteps per gradient / 勾配あたりのタイムステップ = {args.timesteps_per_gradient}")
         accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
         # TODO refactor metadata creation and move to util
@@ -2006,7 +2006,7 @@ class NetworkTrainer:
             "ss_gradient_checkpointing": args.gradient_checkpointing,
             "ss_gradient_checkpointing_cpu_offload": args.gradient_checkpointing_cpu_offload,
             "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
-            "ss_n_timesteps_per_step": args.n_timesteps_per_step,
+            "ss_timesteps_per_gradient": args.timesteps_per_gradient,
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
             "ss_lr_scheduler": args.lr_scheduler,
@@ -2193,7 +2193,7 @@ class NetworkTrainer:
                     # Sample noise that we'll add to the latents
                     noise = torch.randn_like(latents)
 
-                    if args.n_timesteps_per_step <= 1:
+                    if args.timesteps_per_gradient <= 1:
                         # calculate model input and timesteps
                         noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
                             args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
@@ -2220,7 +2220,7 @@ class NetworkTrainer:
                         total_loss = 0.0
                         batch_copy = batch.copy()
                         chosen_timesteps = []
-                        for _ in range(args.n_timesteps_per_step):
+                        for _ in range(args.timesteps_per_gradient):
                             attempts = 0
                             while True:
                                 # calculate model input and timesteps
@@ -2228,7 +2228,7 @@ class NetworkTrainer:
                                     args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
                                 )
                                 t_val = timesteps.item()
-                                if all(abs(t_val - chosen) >= (750.0 / (args.n_timesteps_per_step + 1)) for chosen in chosen_timesteps) or attempts > 50:
+                                if all(abs(t_val - chosen) >= (750.0 / (args.timesteps_per_gradient + 1)) for chosen in chosen_timesteps) or attempts > 50:
                                     chosen_timesteps.append(t_val)
                                     break
                                 attempts += 1
@@ -2247,10 +2247,10 @@ class NetworkTrainer:
                             else:
                                 loss_i = raw_loss_i
 
-                            accelerator.backward(loss_i.mean() / args.n_timesteps_per_step)
+                            accelerator.backward(loss_i.mean() / args.timesteps_per_gradient)
                             total_loss += raw_loss_i.mean().detach().item()
 
-                        loss = torch.tensor(total_loss / args.n_timesteps_per_step, device=accelerator.device)
+                        loss = torch.tensor(total_loss / args.timesteps_per_gradient, device=accelerator.device)
 
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
@@ -2622,17 +2622,19 @@ def setup_parser_common() -> argparse.ArgumentParser:
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
     parser.add_argument(
-        "--n_timesteps_per_step",
+        "--timesteps_per_gradient",
         default=1,
         type=int,
-        help="Compute loss over multiple timesteps instead of a single timestep every step. This applies to gradient accumulation steps as well.\n"
-             "BS1GA1 + n_timesteps_per_step=1 would result in computing loss 1 time every step. Every step would see 1 timestep.\n"
-             "BS1GA1 + n_timesteps_per_step=2 would result in computing loss 2 times every step. Every step would see 2 timesteps.\n"
-             "BS1GA2 + n_timesteps_per_step=2 would result in computing loss 4 times every step. Every step would see 4 timesteps.\n"
-             "BS1GA2 + n_timesteps_per_step=4 would result in computing loss 8 times every step. Every step would see 8 timesteps.\n"
-             "BS1GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 16 timesteps.\n"
-             "BS2GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 32 timesteps.\n"
-             "BS4GA4 + n_timesteps_per_step=4 would result in computing loss 16 times every step. Every step would see 64 timesteps.",
+        help="Run forward+backward over multiple timesteps instead of a single timestep every batch.\n"
+             "Similar to gradient accumulation, except it's across multiple timesteps instead of multiple batches.\n"
+             "Total forward+backward pass count = batch_size * (gradient_accumulation_steps * timesteps_per_gradient)\n"
+             "BS1GA1 + timesteps_per_update=1 = 1 forward+backward pass. Every step would see 1 timestep.\n"
+             "BS1GA1 + timesteps_per_update=2 = 2 forward+backward passes. Every step would see 2 timesteps.\n"
+             "BS1GA2 + timesteps_per_update=2 = 4 forward+backward passes. Every step would see 4 timesteps.\n"
+             "BS1GA2 + timesteps_per_update=4 = 8 forward+backward passes. Every step would see 8 timesteps.\n"
+             "BS1GA4 + timesteps_per_update=4 = 16 forward+backward passes. Every step would see 16 timesteps.\n"
+             "BS2GA4 + timesteps_per_update=4 = 16 forward+backward passes. Every step would see 32 timesteps.\n"
+             "BS4GA4 + timesteps_per_update=4 = 16 forward+backward passes. Every step would see 64 timesteps.",
     )
     parser.add_argument("--learning_rate", type=float, default=2.0e-6, help="learning rate / 学習率")
     parser.add_argument(
