@@ -2190,11 +2190,10 @@ class NetworkTrainer:
                     accelerator.unwrap_model(network).on_step_start()
 
                     latents = self.scale_shift_latents(latents)
+                    # Sample noise that we'll add to the latents
+                    noise = torch.randn_like(latents)
 
                     if args.n_timesteps_per_step <= 1:
-                        # Sample noise that we'll add to the latents
-                        noise = torch.randn_like(latents)
-
                         # calculate model input and timesteps
                         noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
                             args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
@@ -2220,13 +2219,19 @@ class NetworkTrainer:
                     else:
                         total_loss = 0.0
                         batch_copy = batch.copy()
-                        # Sample noise that we'll add to the latents
-                        noise = torch.randn_like(latents)
+                        chosen_timesteps = []
                         for _ in range(args.n_timesteps_per_step):
-                            # calculate model input and timesteps
-                            noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                                args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
-                            )
+                            attempts = 0
+                            while True:
+                                # calculate model input and timesteps
+                                noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                                    args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+                                )
+                                t_val = timesteps.item()
+                                if all(abs(t_val - chosen) >= (750.0 / (args.n_timesteps_per_step + 1)) for chosen in chosen_timesteps) or attempts > 50:
+                                    chosen_timesteps.append(t_val)
+                                    break
+                                attempts += 1
 
                             weighting = compute_loss_weighting_for_sd3(
                                 args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
@@ -2235,18 +2240,15 @@ class NetworkTrainer:
                             model_pred, target = self.call_dit(
                                 args, accelerator, transformer, latents, batch_copy, noise, noisy_model_input, timesteps, network_dtype
                             )
-                            loss_i = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+                            raw_loss_i = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
 
                             if weighting is not None:
-                                loss_i = loss_i * weighting
-                            # loss_i = loss_i.mean([1, 2, 3])
-                            # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
-                            # loss = self.post_process_loss(loss_i, args, timesteps, noise_scheduler)
+                                loss_i = raw_loss_i * weighting
+                            else:
+                                loss_i = raw_loss_i
 
-                            current_loss = loss_i.mean()  # mean loss over all elements in batch
-                            scaled_loss = current_loss / float(args.n_timesteps_per_step)
-                            accelerator.backward(scaled_loss)
-                            total_loss += current_loss.detach().item()
+                            accelerator.backward(loss_i.mean() / args.n_timesteps_per_step)
+                            total_loss += raw_loss_i.mean().detach().item()
 
                         loss = torch.tensor(total_loss / args.n_timesteps_per_step, device=accelerator.device)
 
