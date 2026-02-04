@@ -2627,7 +2627,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         type=int,
         help="Run forward+backward over multiple timesteps instead of a single timestep every batch.\n"
              "Similar to gradient accumulation, except it's across multiple timesteps instead of multiple batches.\n"
-             "Total forward+backward pass count = batch_size * (gradient_accumulation_steps * timesteps_per_gradient)\n"
+             "Total forward+backward pass count = gradient_accumulation_steps * timesteps_per_gradient.\n"
              "BS1GA1 + timesteps_per_update=1 = 1 forward+backward pass. Every step would see 1 timestep.\n"
              "BS1GA1 + timesteps_per_update=2 = 2 forward+backward passes. Every step would see 2 timesteps.\n"
              "BS1GA2 + timesteps_per_update=2 = 4 forward+backward passes. Every step would see 4 timesteps.\n"
