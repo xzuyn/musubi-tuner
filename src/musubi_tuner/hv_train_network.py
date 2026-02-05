@@ -931,47 +931,50 @@ class NetworkTrainer:
                         t[logsnr_mask2] = t_logsnr2
 
                 elif args.timestep_sampling == "custom_flux2":
-                    height, width = latents.shape[-2:]
-                    seq_len = round(width * height / (16 * 16))
-
-                    if not hasattr(self, "flux2_candidates_cache"):
-                        self.flux2_candidates_cache = {}
-
-                    if seq_len not in self.flux2_candidates_cache:
-                        # modified from: https://github.com/black-forest-labs/flux2/blob/b56ac61450f56ea7d32374c2fa54e77a262067f6/src/flux2/sampling.py#L240C1-L266C21
-                        A1, B1 = 8.73809524e-05, 1.89833333
-                        A2, B2 = 0.00016927, 0.45666666
-                        def flux2_scheduler(num_steps, image_seq_len):
-                            if image_seq_len > 4300:  # width*height > 1049*1049
-                                mu = float(A2 * image_seq_len + B2)  # optimal μ for 200 steps
-                            else:
-                                m_10 =  A1 * image_seq_len + B1      # optimal μ for 10 steps
-                                m_200 = A2 * image_seq_len + B2      # optimal μ for 200 steps
-                                a = (m_200 - m_10) / 190.0           # slope between 10 and 200 steps
-                                mu = float(a * num_steps + (m_200 - 200.0 * a))
-                            return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
-
-                        mixed_list = []
-                        for n in range(10, 101):  # all sigmas from all step counts from 10-100
-                            mixed_list.extend(flux2_scheduler(n, seq_len))
-                        mixed_list = list(set(mixed_list))  # keep only unique sigmas
-                        random.shuffle(mixed_list)
-
-                        candidates = torch.tensor(data=mixed_list, device=device)
-                        candidates = candidates[(candidates >= 0.001) & (candidates <= 0.999)]
-                        self.flux2_candidates_cache[seq_len] = candidates
+                    if org_timesteps is not None:
+                        return (org_timesteps - 1.0) / 1000.0
                     else:
-                        candidates = self.flux2_candidates_cache[seq_len]
+                        height, width = latents.shape[-2:]
+                        seq_len = round(width * height / (16 * 16))
 
-                    # pick a random center sigma for each item in the batch
-                    centers = candidates[
-                        torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)
-                    ]
-                    # bandwidth based on the spread of candidates, scaled by number of candidates
-                    bandwidth = (candidates.max() - candidates.min()) / (len(candidates) / 4)
-                    # sample final timesteps by adding gaussian noise to centers
-                    t = centers + torch.randn(batch_size, device=device) * bandwidth
-                    t = torch.clamp(t, min=0.001, max=0.999)
+                        if not hasattr(self, "flux2_candidates_cache"):
+                            self.flux2_candidates_cache = {}
+
+                        if seq_len not in self.flux2_candidates_cache:
+                            # modified from: https://github.com/black-forest-labs/flux2/blob/b56ac61450f56ea7d32374c2fa54e77a262067f6/src/flux2/sampling.py#L240C1-L266C21
+                            A1, B1 = 8.73809524e-05, 1.89833333
+                            A2, B2 = 0.00016927, 0.45666666
+                            def flux2_scheduler(num_steps, image_seq_len):
+                                if image_seq_len > 4300:  # width*height > 1049*1049
+                                    mu = float(A2 * image_seq_len + B2)  # optimal μ for 200 steps
+                                else:
+                                    m_10 =  A1 * image_seq_len + B1      # optimal μ for 10 steps
+                                    m_200 = A2 * image_seq_len + B2      # optimal μ for 200 steps
+                                    a = (m_200 - m_10) / 190.0           # slope between 10 and 200 steps
+                                    mu = float(a * num_steps + (m_200 - 200.0 * a))
+                                return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
+
+                            mixed_list = []
+                            for n in range(10, 101):  # all sigmas from all step counts from 10-100
+                                mixed_list.extend(flux2_scheduler(n, seq_len))
+                            mixed_list = list(set(mixed_list))  # keep only unique sigmas
+                            random.shuffle(mixed_list)
+
+                            candidates = torch.tensor(data=mixed_list, device=device)
+                            candidates = candidates[(candidates >= 0.001) & (candidates <= 0.999)]
+                            self.flux2_candidates_cache[seq_len] = candidates
+                        else:
+                            candidates = self.flux2_candidates_cache[seq_len]
+
+                        # pick a random center sigma for each item in the batch
+                        centers = candidates[
+                            torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)
+                        ]
+                        # bandwidth based on the spread of candidates, scaled by number of candidates
+                        bandwidth = (candidates.max() - candidates.min()) / (len(candidates) / 4)
+                        # sample final timesteps by adding gaussian noise to centers
+                        t = centers + torch.randn(batch_size, device=device) * bandwidth
+                        t = torch.clamp(t, min=0.001, max=0.999)
 
                 return t  # 0 to 1
 
