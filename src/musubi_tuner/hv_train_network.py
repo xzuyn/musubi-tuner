@@ -2204,7 +2204,12 @@ class NetworkTrainer:
                     model_pred, target = self.call_dit(
                         args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
                     )
-                    loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+                    # pseudo-huber
+                    delta = 1.0
+                    loss = (delta ** 2) * (
+                        torch.sqrt(1 + ((model_pred.to(torch.float32) - target.to(torch.float32)) / delta) ** 2) - 1
+                    )
+                    loss = loss.to(network_dtype)
 
                     if weighting is not None:
                         loss = loss * weighting
