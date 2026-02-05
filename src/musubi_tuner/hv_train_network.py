@@ -346,13 +346,20 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, times
 
     SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
     """
-    if weighting_scheme == "sigma_sqrt" or weighting_scheme == "cosmap":
+    if weighting_scheme in ["sigma_sqrt", "cosmap", "min_snr", "soft_min_snr"]:
         sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=5, dtype=dtype)
         if weighting_scheme == "sigma_sqrt":
             weighting = (sigmas**-2.0).float()
-        else:
+        elif weighting_scheme == "cosmap":
             bot = 1 - 2 * sigmas + 2 * sigmas**2
             weighting = 2 / (math.pi * bot)
+        elif weighting_scheme == "min_snr":
+            gamma = 5.0
+            snr = ((1 - sigmas) / sigmas) ** 2
+            weighting = torch.clamp(snr, max=gamma) / (snr + 1)
+        elif weighting_scheme == "soft_min_snr":
+            gamma = 4.0
+            weighting = 1 / (sigmas**2 + (1.0 / gamma))
     else:
         weighting = None  # torch.ones_like(sigmas)
     return weighting
@@ -2741,7 +2748,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         "--weighting_scheme",
         type=str,
         default="none",
-        choices=["logit_normal", "mode", "cosmap", "sigma_sqrt", "none"],
+        choices=["logit_normal", "mode", "cosmap", "sigma_sqrt", "min_snr", "soft_min_snr", "none"],
         help="weighting scheme for timestep distribution. Default is none / タイムステップ分布の重み付けスキーム、デフォルトはnone",
     )
     parser.add_argument(
