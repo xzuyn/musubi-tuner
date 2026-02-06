@@ -1074,6 +1074,87 @@ class NetworkTrainer:
                 line += "#" * int(w / max_weighting * CONSOLE_WIDTH)
                 print(line)
 
+    def accumulate_timestep_loss(
+        self,
+        args,
+        accelerator,
+        transformer,
+        latents,
+        batch,
+        noise,
+        noise_scheduler,
+        network_dtype,
+        dit_dtype,
+    ):
+        total_loss = 0.0
+        batch_copy = batch.copy()
+        chosen_timesteps = []
+
+        for _ in range(args.timestep_accumulation_steps):
+            attempts = 0
+            while True:
+                noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                    args,
+                    noise,
+                    latents,
+                    batch_copy["timesteps"],
+                    noise_scheduler,
+                    accelerator.device,
+                    dit_dtype,
+                )
+
+                t_val = timesteps.item()
+                if all(
+                    # 750 is very safe, could be increased
+                    abs(t_val - chosen) >= (750.0 / (args.timestep_accumulation_steps + 1))
+                    for chosen in chosen_timesteps
+                ) or attempts > 50:
+                    chosen_timesteps.append(t_val)
+                    break
+                attempts += 1
+
+            weighting = compute_loss_weighting_for_sd3(
+                args.weighting_scheme,
+                noise_scheduler,
+                timesteps,
+                accelerator.device,
+                dit_dtype,
+            )
+
+            def compute_and_backward(current_batch, scale):
+                model_pred, target = self.call_dit(
+                    args, accelerator, transformer, latents,
+                    current_batch, noise, noisy_model_input,
+                    timesteps, network_dtype,
+                )
+
+                loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+
+                weighted_loss = loss * weighting if weighting is not None else loss
+                accelerator.backward(weighted_loss.mean() * scale)
+
+                return loss.mean().detach().item()
+
+            # TODO: add antithetic noise (-noise)? https://arxiv.org/abs/2506.06185
+            if args.accumulate_unconditional:
+                # conditional
+                total_loss += compute_and_backward(
+                    batch_copy,
+                    1.0 / (args.timestep_accumulation_steps * 2)
+                ) / 2
+                # unconditional
+                total_loss += compute_and_backward(
+                    {**batch_copy, "ctx_vec": torch.zeros_like(batch_copy["ctx_vec"])},
+                    1.0 / (args.timestep_accumulation_steps * 2)
+                ) / 2
+            else:
+                total_loss += compute_and_backward(
+                    batch_copy,
+                    1.0 / args.timestep_accumulation_steps
+                )
+
+        return total_loss / args.timestep_accumulation_steps
+
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
         if not should_sample_images(args, steps, epoch):
@@ -2190,10 +2271,11 @@ class NetworkTrainer:
                     accelerator.unwrap_model(network).on_step_start()
 
                     latents = self.scale_shift_latents(latents)
+
                     # Sample noise that we'll add to the latents
                     noise = torch.randn_like(latents)
 
-                    if args.timestep_accumulation_steps <= 1:
+                    if not args.timestep_accumulation_steps > 1:
                         # calculate model input and timesteps
                         noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
                             args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
@@ -2217,40 +2299,17 @@ class NetworkTrainer:
                         loss = loss.mean()  # mean loss over all elements in batch
                         accelerator.backward(loss)
                     else:
-                        total_loss = 0.0
-                        batch_copy = batch.copy()
-                        chosen_timesteps = []
-                        for _ in range(args.timestep_accumulation_steps):
-                            attempts = 0
-                            while True:
-                                # calculate model input and timesteps
-                                noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                                    args, noise, latents, batch_copy["timesteps"], noise_scheduler, accelerator.device, dit_dtype
-                                )
-                                t_val = timesteps.item()
-                                if all(abs(t_val - chosen) >= (750.0 / (args.timestep_accumulation_steps + 1)) for chosen in chosen_timesteps) or attempts > 50:
-                                    chosen_timesteps.append(t_val)
-                                    break
-                                attempts += 1
-
-                            weighting = compute_loss_weighting_for_sd3(
-                                args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
-                            )
-
-                            model_pred, target = self.call_dit(
-                                args, accelerator, transformer, latents, batch_copy, noise, noisy_model_input, timesteps, network_dtype
-                            )
-                            raw_loss_i = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
-
-                            if weighting is not None:
-                                loss_i = raw_loss_i * weighting
-                            else:
-                                loss_i = raw_loss_i
-
-                            accelerator.backward(loss_i.mean() / args.timestep_accumulation_steps)
-                            total_loss += raw_loss_i.mean().detach().item()
-
-                        loss = torch.tensor(total_loss / args.timestep_accumulation_steps, device=accelerator.device)
+                        loss = self.accumulate_timestep_loss(
+                            args,
+                            accelerator,
+                            transformer,
+                            latents,
+                            batch,
+                            noise,
+                            noise_scheduler,
+                            network_dtype,
+                            dit_dtype,
+                        )
 
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
@@ -2621,6 +2680,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         nargs="*",
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
+    parser.add_argument("--accumulate_unconditional", action="store_true")
     parser.add_argument(
         "--timestep_accumulation_steps",
         default=1,
