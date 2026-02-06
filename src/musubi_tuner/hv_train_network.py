@@ -780,18 +780,8 @@ class NetworkTrainer:
         noise_scheduler: FlowMatchDiscreteScheduler,
         device: torch.device,
         dtype: torch.dtype,
-        for_eval: Optional[bool] = False,
-        eval_timestep: Optional[float] = 500.0,
     ):
         batch_size = noise.shape[0]
-
-        if for_eval:
-            t_val = (eval_timestep if eval_timestep is not None else 500.0) / 1000.0
-            t = torch.full((batch_size,), t_val, device=device, dtype=dtype)
-            model_timesteps = t * 1000.0 + 1.0
-            t_view = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
-            noisy_model_input = (1 - t_view) * latents + t_view * noise
-            return noisy_model_input, model_timesteps
 
         if timesteps is not None:
             timesteps = torch.tensor(timesteps, device=device)
@@ -1126,12 +1116,10 @@ class NetworkTrainer:
                             args=args,
                             noise=eval_noise,
                             latents=eval_latents,
-                            timesteps=eval_batch["timesteps"],
+                            timesteps=[float(val_ts)],
                             noise_scheduler=noise_scheduler,
                             device=accelerator.device,
                             dtype=dit_dtype,
-                            for_eval=True,
-                            eval_timestep=val_ts
                         )
 
                         eval_pred, eval_target = self.call_dit(
@@ -2287,12 +2275,13 @@ class NetworkTrainer:
         optimizer_train_fn()  # Set training mode
 
         if args.eval_every_n_steps is not None and eval_dataloader is not None:
-            avg_eval_loss_init = self.evaluate(
+            eval_loss = self.evaluate(
                 accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler,
                 dit_dtype, network_dtype
             )
-            accelerator.log({"loss/eval": avg_eval_loss_init}, step=0)
-            progress_bar.set_postfix(**{"eval_loss": avg_eval_loss_init})
+            accelerator.log({"loss/eval": eval_loss}, step=0)
+            progress_bar.set_postfix(**{"eval_loss": eval_loss})
+            eval_loss = None
 
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
@@ -2374,12 +2363,12 @@ class NetworkTrainer:
                     should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
                     should_eval = args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0 and eval_dataloader is not None
 
-                    avg_eval_loss = None
+                    eval_loss = None
                     if should_sampling or should_saving or should_eval:
                         optimizer_eval_fn()
 
                         if should_eval:
-                            avg_eval_loss = self.evaluate(
+                            eval_loss = self.evaluate(
                                 accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler,
                                 dit_dtype, network_dtype
                             )
@@ -2407,8 +2396,8 @@ class NetworkTrainer:
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
 
-                if avg_eval_loss is not None:
-                    logs["eval_loss"] = avg_eval_loss
+                if eval_loss is not None:
+                    logs["eval_loss"] = eval_loss
 
                 if args.scale_weight_norms:
                     progress_bar.set_postfix(**{**max_mean_logs, **logs})
@@ -2417,7 +2406,7 @@ class NetworkTrainer:
 
                 if len(accelerator.trackers) > 0:
                     logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm, avg_eval_loss
+                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm, eval_loss
                     )
                     accelerator.log(logs, step=global_step)
 
