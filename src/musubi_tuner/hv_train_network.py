@@ -1090,6 +1090,19 @@ class NetworkTrainer:
         batch_copy = batch.copy()
         chosen_timesteps = []
 
+        def compute_and_backward(current_batch, scale):
+            model_pred, target = self.call_dit(
+                args, accelerator, transformer, latents, current_batch,
+                noise, noisy_model_input, timesteps, network_dtype,
+            )
+
+            loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+
+            weighted_loss = loss * weighting if weighting is not None else loss
+            accelerator.backward(weighted_loss.mean() * scale)
+
+            return loss.mean().detach().item()
+
         for _ in range(args.timestep_accumulation_steps):
             attempts = 0
             while True:
@@ -1120,20 +1133,6 @@ class NetworkTrainer:
                 accelerator.device,
                 dit_dtype,
             )
-
-            def compute_and_backward(current_batch, scale):
-                model_pred, target = self.call_dit(
-                    args, accelerator, transformer, latents,
-                    current_batch, noise, noisy_model_input,
-                    timesteps, network_dtype,
-                )
-
-                loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
-
-                weighted_loss = loss * weighting if weighting is not None else loss
-                accelerator.backward(weighted_loss.mean() * scale)
-
-                return loss.mean().detach().item()
 
             # TODO: add antithetic noise (-noise)? https://arxiv.org/abs/2506.06185
             if args.accumulate_unconditional:
@@ -2275,41 +2274,17 @@ class NetworkTrainer:
                     # Sample noise that we'll add to the latents
                     noise = torch.randn_like(latents)
 
-                    if not args.timestep_accumulation_steps > 1:
-                        # calculate model input and timesteps
-                        noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                            args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
-                        )
-
-                        weighting = compute_loss_weighting_for_sd3(
-                            args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
-                        )
-
-                        model_pred, target = self.call_dit(
-                            args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
-                        )
-                        loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
-
-                        if weighting is not None:
-                            loss = loss * weighting
-                        # loss = loss.mean([1, 2, 3])
-                        # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
-                        # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
-
-                        loss = loss.mean()  # mean loss over all elements in batch
-                        accelerator.backward(loss)
-                    else:
-                        loss = self.accumulate_timestep_loss(
-                            args,
-                            accelerator,
-                            transformer,
-                            latents,
-                            batch,
-                            noise,
-                            noise_scheduler,
-                            network_dtype,
-                            dit_dtype,
-                        )
+                    loss = self.accumulate_timestep_loss(
+                        args,
+                        accelerator,
+                        transformer,
+                        latents,
+                        batch,
+                        noise,
+                        noise_scheduler,
+                        network_dtype,
+                        dit_dtype,
+                    )
 
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
