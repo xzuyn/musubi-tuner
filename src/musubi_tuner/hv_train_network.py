@@ -1782,11 +1782,12 @@ class NetworkTrainer:
 
         eval_dataset_group = None
         if blueprint.eval_dataset_group is not None:
+            logger.info(f"Loading eval datasets")
             eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(
                 blueprint.eval_dataset_group,
                 training=True,
                 num_timestep_buckets=self.num_timestep_buckets,
-                shared_epoch=current_epoch
+                shared_epoch=current_epoch,
             )
 
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
@@ -2274,10 +2275,9 @@ class NetworkTrainer:
 
         optimizer_train_fn()  # Set training mode
 
-        if args.eval_every_n_steps is not None and eval_dataloader is not None:
+        if eval_dataloader is not None and (args.eval_every_n_steps is not None or args.eval_every_n_epochs is not None):
             eval_loss = self.evaluate(
-                accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler,
-                dit_dtype, network_dtype
+                accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler, dit_dtype, network_dtype
             )
             accelerator.log({"loss/eval": eval_loss}, step=0)
             progress_bar.set_postfix(**{"eval_loss": eval_loss})
@@ -2361,7 +2361,13 @@ class NetworkTrainer:
                     # to avoid calling optimizer_eval_fn() too frequently, we call it only when we need to sample images or save the model
                     should_sampling = should_sample_images(args, global_step, epoch=None)
                     should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
-                    should_eval = args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0 and eval_dataloader is not None
+                    should_eval = (
+                        eval_dataloader is not None
+                        and (
+                            (args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0)
+                            or (args.eval_every_n_epochs is not None and (global_step / len(train_dataloader)) % args.eval_every_n_epochs == 0)
+                        )
+                    )
 
                     eval_loss = None
                     if should_sampling or should_saving or should_eval:
@@ -3023,6 +3029,11 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--eval_every_n_steps",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--eval_every_n_epochs",
         type=int,
         default=None,
     )
