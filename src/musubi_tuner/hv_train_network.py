@@ -1086,9 +1086,7 @@ class NetworkTrainer:
         dit_dtype,
     ):
         """
-        Compute MSE or Pseudo-Huber loss for one or more timesteps. Can operate in two modes:
-          1. Gradient Accumulation: Compute, sum, then average each timestep sequentially. Low memory, multiple fwd+bwd passes.
-          2. Batched: Compute all timesteps together. High memory, single fwd+bwd pass. NOT tested.
+        Compute MSE or Pseudo-Huber loss for one or more timesteps
         """
 
         total_loss = 0.0
@@ -1126,120 +1124,50 @@ class NetworkTrainer:
             noise = torch.randn_like(latents)
 
         # TODO: invert to have do_batched check within timestep loop?
-        if not args.do_batched_timesteps:
-            for _ in range(args.timestep_accumulation_steps):
-                if not args.use_same_noise:
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
+        # TODO: re-add batched
+        for _ in range(args.timestep_accumulation_steps):
+            if not args.use_same_noise:
+                # Sample noise that we'll add to the latents
+                noise = torch.randn_like(latents)
 
-                attempts = 0
-                while True:
-                    noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                        args, noise, latents, batch["timesteps"], noise_scheduler,
-                        accelerator.device, dit_dtype,
-                    )
-                    t_val = timesteps.item()
-                    if all(abs(t_val - chosen) >= (750.0 / (args.timestep_accumulation_steps + 1)) for chosen in chosen_timesteps) or attempts > 50:
-                        chosen_timesteps.append(t_val)
-                        break
-                    attempts += 1
-
-                weighting = compute_loss_weighting_for_sd3(
-                    args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
+            attempts = 0
+            while True:
+                noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                    args, noise, latents, batch["timesteps"], noise_scheduler,
+                    accelerator.device, dit_dtype,
                 )
+                t_val = timesteps.item()
+                if all(abs(t_val - chosen) >= (750.0 / (args.timestep_accumulation_steps + 1)) for chosen in chosen_timesteps) or attempts > 50:
+                    chosen_timesteps.append(t_val)
+                    break
+                attempts += 1
 
-                # TODO: add uncond dropout
-                if args.accumulate_unconditional:
-                    # Conditional pass
-                    total_loss += compute_and_backward(
-                        latents, batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
-                        weighting, noisy_model_input, timesteps
-                    ) / 2
-                    # Unconditional pass
-                    unconditional_batch = {
-                        k: (torch.zeros_like(v) if k in uncond_keys else v)
-                        for k, v in batch.items()
-                    }
-                    total_loss += compute_and_backward(
-                        latents, unconditional_batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
-                        weighting, noisy_model_input, timesteps
-                    ) / 2
-                else:
-                    total_loss += compute_and_backward(
-                        latents, batch, noise, 1.0 / args.timestep_accumulation_steps,
-                        weighting, noisy_model_input, timesteps
-                    )
-            return total_loss / args.timestep_accumulation_steps
-        else:  # do_batched_timesteps=True
-            all_batches = []
-            all_noises = []
-            all_weighting = []
-            all_noisy_model_inputs = []
-            all_timesteps = []
-            chosen_timesteps = []
-
-            latents = latents.to(device=accelerator.device, dtype=network_dtype)
-
-            for _ in range(args.timestep_accumulation_steps):
-                if not args.use_same_noise:
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
-
-                attempts = 0
-                while True:
-                    noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                        args, noise, latents, batch["timesteps"], noise_scheduler,
-                        accelerator.device, dit_dtype,
-                    )
-                    t_val = timesteps.item()
-                    if all(abs(t_val - chosen) >= (750.0 / (args.timestep_accumulation_steps + 1)) for chosen in chosen_timesteps) or attempts > 50:
-                        chosen_timesteps.append(t_val)
-                        break
-                    attempts += 1
-
-                weighting = compute_loss_weighting_for_sd3(
-                    args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
-                )
-                if weighting is None:
-                    weighting = torch.ones_like(timesteps)
-
-                # Conditional pass
-                all_noisy_model_inputs.append(noisy_model_input)
-                all_timesteps.append(timesteps)
-                all_weighting.append(weighting)
-                all_batches.append(batch)
-                all_noises.append(noise)
-
-                if args.accumulate_unconditional:
-                    # Unconditional pass
-                    unconditional_batch = {
-                        k: (torch.zeros_like(v) if k in uncond_keys else v)
-                        for k, v in batch.items()
-                    }
-                    all_noisy_model_inputs.append(noisy_model_input)
-                    all_timesteps.append(timesteps)
-                    all_weighting.append(weighting)
-                    all_batches.append(unconditional_batch)
-                    all_noises.append(noise)
-
-            b_batch = {}
-            for key in all_batches[0]:
-                if isinstance(all_batches[0][key], torch.Tensor):
-                    b_batch[key] = torch.cat([b[key] for b in all_batches], dim=0)
-                else:
-                    # Non-tensor values (just use first one, assuming they're identical)
-                    b_batch[key] = all_batches[0][key]
-            b_latents = latents.expand(len(all_batches) * latents.shape[0], *latents.shape[1:])
-            b_noise = torch.cat(all_noises, dim=0)
-            b_weighting = torch.cat(all_weighting, dim=0)
-            b_noisy_model_input = torch.cat(all_noisy_model_inputs, dim=0)
-            b_timesteps = torch.cat(all_timesteps, dim=0)
-
-            loss = compute_and_backward(
-                b_latents, b_batch, b_noise, 1.0, b_weighting, b_noisy_model_input, b_timesteps
+            weighting = compute_loss_weighting_for_sd3(
+                args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
             )
 
-            return loss
+            # TODO: add uncond dropout
+            if args.accumulate_unconditional:
+                # Conditional pass
+                total_loss += compute_and_backward(
+                    latents, batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
+                    weighting, noisy_model_input, timesteps
+                ) / 2
+                # Unconditional pass
+                unconditional_batch = {
+                    k: (torch.zeros_like(v) if k in uncond_keys else v)
+                    for k, v in batch.items()
+                }
+                total_loss += compute_and_backward(
+                    latents, unconditional_batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
+                    weighting, noisy_model_input, timesteps
+                ) / 2
+            else:
+                total_loss += compute_and_backward(
+                    latents, batch, noise, 1.0 / args.timestep_accumulation_steps,
+                    weighting, noisy_model_input, timesteps
+                )
+        return total_loss / args.timestep_accumulation_steps
 
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
