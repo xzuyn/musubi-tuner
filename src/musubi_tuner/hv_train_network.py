@@ -1095,26 +1095,27 @@ class NetworkTrainer:
         uncond_keys = ["ctx_vec", "llm", "llm_mask", "clipL"]  # flux_2_train_network.call_dit & hv_train_network.call_dit
         chosen_timesteps = []
 
-        def calculate_loss_tensor(model_pred, target):
+        def compute_and_backward(
+            current_latents, current_batch, current_noise, current_scale,
+            current_weighting, current_noisy_model_input, current_timesteps
+        ):
+            model_pred, target = self.call_dit(
+                args, accelerator, transformer, current_latents, current_batch,
+                current_noise, current_noisy_model_input, current_timesteps, network_dtype,
+            )
+
             if args.loss_type == "mse":
-                return torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+                loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
             elif args.loss_type == "pseudo-huber":
                 delta = 1.0
                 error = model_pred.to(torch.float32) - target.to(torch.float32)
                 loss = (delta ** 2) * (torch.sqrt(1 + (error / delta) ** 2) - 1)
-                return loss.to(network_dtype)
-            return None
+                loss = loss.to(network_dtype)
+            else:
+                loss = None
 
-        def compute_and_backward(current_batch, scale, weighting, noisy_model_input, timesteps):
-            model_pred, target = self.call_dit(
-                args, accelerator, transformer, latents, current_batch,
-                noise, noisy_model_input, timesteps, network_dtype,
-            )
-
-            loss = calculate_loss_tensor(model_pred, target)
-
-            weighted_loss = loss * weighting if weighting is not None else loss
-            accelerator.backward(weighted_loss.mean() * scale)
+            weighted_loss = loss * current_weighting if current_weighting is not None else loss
+            accelerator.backward(weighted_loss.mean() * current_scale)
 
             return loss.mean().detach().item()
 
@@ -1147,10 +1148,11 @@ class NetworkTrainer:
                     args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
                 )
 
+                # TODO: add uncond dropout
                 if args.accumulate_unconditional:
                     # Conditional pass
                     total_loss += compute_and_backward(
-                        batch, 1.0 / (args.timestep_accumulation_steps * 2),
+                        latents, batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
                         weighting, noisy_model_input, timesteps
                     ) / 2
                     # Unconditional pass
@@ -1159,21 +1161,21 @@ class NetworkTrainer:
                         for k, v in batch.items()
                     }
                     total_loss += compute_and_backward(
-                        unconditional_batch, 1.0 / (args.timestep_accumulation_steps * 2),
+                        latents, unconditional_batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
                         weighting, noisy_model_input, timesteps
                     ) / 2
                 else:
                     total_loss += compute_and_backward(
-                        batch, 1.0 / args.timestep_accumulation_steps,
+                        latents, batch, noise, 1.0 / args.timestep_accumulation_steps,
                         weighting, noisy_model_input, timesteps
                     )
             return total_loss / args.timestep_accumulation_steps
         else:  # do_batched_timesteps=True
-            all_noisy_inputs = []
-            all_timesteps = []
-            all_weights = []
             all_batches = []
             all_noises = []
+            all_weighting = []
+            all_noisy_model_inputs = []
+            all_timesteps = []
             chosen_timesteps = []
 
             latents = latents.to(device=accelerator.device, dtype=network_dtype)
@@ -1202,9 +1204,9 @@ class NetworkTrainer:
                     weighting = torch.ones_like(timesteps)
 
                 # Conditional pass
-                all_noisy_inputs.append(noisy_model_input)
+                all_noisy_model_inputs.append(noisy_model_input)
                 all_timesteps.append(timesteps)
-                all_weights.append(weighting)
+                all_weighting.append(weighting)
                 all_batches.append(batch)
                 all_noises.append(noise)
 
@@ -1214,42 +1216,30 @@ class NetworkTrainer:
                         k: (torch.zeros_like(v) if k in uncond_keys else v)
                         for k, v in batch.items()
                     }
-                    all_noisy_inputs.append(noisy_model_input)
+                    all_noisy_model_inputs.append(noisy_model_input)
                     all_timesteps.append(timesteps)
-                    all_weights.append(weighting)
+                    all_weighting.append(weighting)
                     all_batches.append(unconditional_batch)
                     all_noises.append(noise)
 
-            # Concatenate everything along batch dimension
-            b_noisy_input = torch.cat(all_noisy_inputs, dim=0)
-            b_timesteps = torch.cat(all_timesteps, dim=0)
-            b_weights = torch.cat(all_weights, dim=0)
-            b_noise = torch.cat(all_noises, dim=0)
-            b_latents = latents.expand(len(all_batches) * latents.shape[0], *latents.shape[1:])
-
-            # Stack batch dictionaries
-            final_batch = {}
+            b_batch = {}
             for key in all_batches[0]:
                 if isinstance(all_batches[0][key], torch.Tensor):
-                    final_batch[key] = torch.cat([b[key] for b in all_batches], dim=0)
+                    b_batch[key] = torch.cat([b[key] for b in all_batches], dim=0)
                 else:
                     # Non-tensor values (just use first one, assuming they're identical)
-                    final_batch[key] = all_batches[0][key]
+                    b_batch[key] = all_batches[0][key]
+            b_latents = latents.expand(len(all_batches) * latents.shape[0], *latents.shape[1:])
+            b_noise = torch.cat(all_noises, dim=0)
+            b_weighting = torch.cat(all_weighting, dim=0)
+            b_noisy_model_input = torch.cat(all_noisy_model_inputs, dim=0)
+            b_timesteps = torch.cat(all_timesteps, dim=0)
 
-            model_pred, target = self.call_dit(
-                args, accelerator, transformer, b_latents, final_batch,
-                b_noise, b_noisy_input, b_timesteps, network_dtype,
+            loss = compute_and_backward(
+                b_latents, b_batch, b_noise, 1.0, b_weighting, b_noisy_model_input, b_timesteps
             )
 
-            loss = calculate_loss_tensor(model_pred, target)
-
-            # Reshape weights to [Batch, 1, 1, 1] for broadcasting
-            b_weights = b_weights.view(b_weights.shape[0], *([1] * (loss.dim() - 1)))
-            weighted_loss = loss * b_weights
-
-            accelerator.backward(weighted_loss.mean())
-
-            return weighted_loss.mean().detach().item()
+            return loss
 
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
