@@ -1136,7 +1136,7 @@ class NetworkTrainer:
                             )
 
                             # mse
-                            eval_loss = torch.nn.functional.mse_loss(eval_pred.to(torch.float32), eval_target.to(torch.float32), reduction="none")
+                            eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
 
                             eval_loss = eval_loss.to(network_dtype)
                             eval_losses.append(eval_loss.mean().item())
