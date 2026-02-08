@@ -1086,17 +1086,27 @@ class NetworkTrainer:
         dit_dtype,
     ):
         """
-        Compute MSE or Pseudo-Huber loss for one or more timesteps
+        Compute MSE or Pseudo-Huber loss for one or more timesteps, averaged to keep the same magnitude.
+
+        More timesteps reduces gradient variance, but increase total training time.
+        Can be a better speed trade-off than gradient accumulation steps, and using a mix may be the most ideal.
+
+        Only tested with batch_size=1 & single GPU.
         """
 
         total_loss = 0.0
         uncond_keys = ["ctx_vec", "llm", "llm_mask", "clipL"]  # flux_2_train_network.call_dit & hv_train_network.call_dit
         chosen_timesteps = []
 
-        def compute_and_backward(
-            current_latents, current_batch, current_noise, current_scale,
-            current_weighting, current_noisy_model_input, current_timesteps
-        ):
+        passes_per_step = 1
+        if args.use_antithetic_noise:
+            passes_per_step += 1
+        if args.accumulate_unconditional:
+            passes_per_step += 1
+        t_scalar = args.timestep_accumulation_steps * passes_per_step
+
+        # TODO: pull out so evaluate can use this too
+        def compute_and_backward(current_latents, current_batch, current_noise, current_noisy_model_input, current_timesteps):
             model_pred, target = self.call_dit(
                 args, accelerator, transformer, current_latents, current_batch,
                 current_noise, current_noisy_model_input, current_timesteps, network_dtype,
@@ -1105,26 +1115,30 @@ class NetworkTrainer:
             if args.loss_type == "mse":
                 loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
             elif args.loss_type == "pseudo-huber":
-                delta = 1.0
+                delta = 1.0  # TODO: find ideal value. 1 felt the closest to simply improving MSE
                 error = model_pred.to(torch.float32) - target.to(torch.float32)
                 loss = (delta ** 2) * (torch.sqrt(1 + (error / delta) ** 2) - 1)
                 loss = loss.to(network_dtype)
             else:
                 loss = None
 
-            weighted_loss = loss * current_weighting if current_weighting is not None else loss
-            accelerator.backward(weighted_loss.mean() * current_scale)
+            weighting = compute_loss_weighting_for_sd3(
+                args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
+            )
+
+            weighted_loss = loss * weighting if weighting is not None else loss
+            accelerator.backward(weighted_loss.mean() * (1.0 / t_scalar))
 
             return loss.mean().detach().item()
 
-        # TODO: add antithetic noise (-noise)? https://arxiv.org/abs/2506.06185
-        # TODO: compare same noise vs different noise per timestep. currently uses same noise
+        # TODO: try pink/pyramid/multi noise?
+        # TODO: try minibatch-ot? (https://arxiv.org/abs/2302.00482)
+
         if args.use_same_noise:
             # Sample noise that we'll add to the latents
             noise = torch.randn_like(latents)
 
-        # TODO: invert to have do_batched check within timestep loop?
-        # TODO: re-add batched
+        # TODO: add PCGrad? https://arxiv.org/abs/2001.06782
         for _ in range(args.timestep_accumulation_steps):
             if not args.use_same_noise:
                 # Sample noise that we'll add to the latents
@@ -1142,32 +1156,34 @@ class NetworkTrainer:
                     break
                 attempts += 1
 
-            weighting = compute_loss_weighting_for_sd3(
-                args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype,
+            # Original noise conditional pass
+            total_loss += compute_and_backward(
+                latents, batch, noise, noisy_model_input, timesteps
             )
 
             # TODO: add uncond dropout
+            # Original noise unconditional pass
             if args.accumulate_unconditional:
-                # Conditional pass
-                total_loss += compute_and_backward(
-                    latents, batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
-                    weighting, noisy_model_input, timesteps
-                ) / 2
-                # Unconditional pass
                 unconditional_batch = {
                     k: (torch.zeros_like(v) if k in uncond_keys else v)
                     for k, v in batch.items()
                 }
                 total_loss += compute_and_backward(
-                    latents, unconditional_batch, noise, 1.0 / (args.timestep_accumulation_steps * 2),
-                    weighting, noisy_model_input, timesteps
-                ) / 2
-            else:
-                total_loss += compute_and_backward(
-                    latents, batch, noise, 1.0 / args.timestep_accumulation_steps,
-                    weighting, noisy_model_input, timesteps
+                    latents, unconditional_batch, noise, noisy_model_input, timesteps
                 )
-        return total_loss / args.timestep_accumulation_steps
+
+            # Antithetic noise (https://arxiv.org/abs/2506.06185)
+            if args.use_antithetic_noise:
+                neg_noise = -noise
+                neg_noisy_model_input, _ = self.get_noisy_model_input_and_timesteps(
+                    args, neg_noise, latents, timesteps, noise_scheduler,
+                    accelerator.device, dit_dtype,
+                )
+                total_loss += compute_and_backward(
+                    latents, batch, neg_noise, neg_noisy_model_input, timesteps
+                )
+
+        return total_loss / t_scalar
 
     def sample_images(self, accelerator: Accelerator, args, epoch, steps, vae, transformer, sample_parameters, dit_dtype):
         """architecture independent sample images"""
@@ -2666,6 +2682,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         nargs="*",
         help='additional arguments for optimizer (like "weight_decay=0.01 betas=0.9,0.999 ...") / オプティマイザの追加引数（例： "weight_decay=0.01 betas=0.9,0.999 ..."）',
     )
+    parser.add_argument("--use_same_noise", action="store_true")
     parser.add_argument("--loss_type", choices=["mse", "pseudo-huber"], default="mse")
     parser.add_argument("--accumulate_unconditional", action="store_true")
     parser.add_argument("--do_batched_timesteps", action="store_true")
@@ -2684,6 +2701,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
              "BS2GA4 + timestep_accumulation_steps=4 = 16 forward+backward passes. Every step would see 32 timesteps.\n"
              "BS4GA4 + timestep_accumulation_steps=4 = 16 forward+backward passes. Every step would see 64 timesteps.",
     )
+    parser.add_argument("--use_antithetic_noise", action="store_true", help="Use antithetic noise")
     parser.add_argument("--learning_rate", type=float, default=2.0e-6, help="learning rate / 学習率")
     parser.add_argument(
         "--max_grad_norm",
