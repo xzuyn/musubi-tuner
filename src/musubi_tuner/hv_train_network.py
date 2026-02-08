@@ -1092,54 +1092,58 @@ class NetworkTrainer:
         except Exception:
             pass
 
+        transformer_eval_was_training = transformer.training
+        transformer.eval()
+
         eval_losses = []
+        eval_seed = args.seed if args.seed is not None else 42
 
         try:
             # Set seed for consistent evaluation across entire run
-            torch.manual_seed(42)
+            torch.manual_seed(eval_seed)
             if torch.cuda.is_available():
-                torch.cuda.manual_seed(42)
-
-            if args.gradient_checkpointing:
-                transformer.eval()
+                torch.cuda.manual_seed(eval_seed)
 
             for eval_batch in tqdm(eval_dataloader, desc="Evaluating", disable=not accelerator.is_local_main_process):
                 with torch.no_grad():
                     eval_latents = eval_batch["latents"]
                     eval_latents = self.scale_shift_latents(eval_latents)
-                    eval_noise = torch.randn_like(eval_latents)
 
-                    # TODO: add arg for test_timesteps
-                    test_timesteps = [200.0, 400.0, 600.0, 800.0]
-                    for val_ts in test_timesteps:
-                        eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
-                            args=args,
-                            noise=eval_noise,
-                            latents=eval_latents,
-                            timesteps=[float(val_ts)],
-                            noise_scheduler=noise_scheduler,
-                            device=accelerator.device,
-                            dtype=dit_dtype,
-                        )
+                    # TODO: add range as arg
+                    for val_ts in range(100, 901, 100):  # 100,200,30,...,700,800,900
+                        eval_noise = torch.randn_like(eval_latents)
+                        for current_noise in [eval_noise, -eval_noise]:  # antithetic noise (https://arxiv.org/abs/2506.06185)
+                            eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
+                                args=args,
+                                noise=current_noise,
+                                latents=eval_latents,
+                                timesteps=[float(val_ts)],
+                                noise_scheduler=noise_scheduler,
+                                device=accelerator.device,
+                                dtype=dit_dtype,
+                            )
 
-                        eval_pred, eval_target = self.call_dit(
-                            args,
-                            accelerator,
-                            transformer,
-                            eval_latents,
-                            eval_batch,
-                            eval_noise,
-                            eval_noisy_input,
-                            eval_timesteps,
-                            network_dtype,
-                        )
+                            eval_pred, eval_target = self.call_dit(
+                                args,
+                                accelerator,
+                                transformer,
+                                eval_latents,
+                                eval_batch,
+                                current_noise,
+                                eval_noisy_input,
+                                eval_timesteps,
+                                network_dtype,
+                            )
 
-                        eval_loss = torch.nn.functional.mse_loss(eval_pred.to(network_dtype), eval_target, reduction="none")
-                        eval_losses.append(eval_loss.mean().item())
+                            # mse
+                            eval_loss = torch.nn.functional.mse_loss(eval_pred.to(torch.float32), eval_target.to(torch.float32), reduction="none")
+
+                            eval_loss = eval_loss.to(network_dtype)
+                            eval_losses.append(eval_loss.mean().item())
 
         finally:
             # Restore training state
-            if args.gradient_checkpointing:
+            if transformer_eval_was_training:
                 transformer.train()
 
             torch.set_rng_state(rng_state)
@@ -2361,13 +2365,15 @@ class NetworkTrainer:
                     # to avoid calling optimizer_eval_fn() too frequently, we call it only when we need to sample images or save the model
                     should_sampling = should_sample_images(args, global_step, epoch=None)
                     should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
-                    should_eval = (
-                        eval_dataloader is not None
-                        and (
-                            (args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0)
-                            or (args.eval_every_n_epochs is not None and (global_step / len(train_dataloader)) % args.eval_every_n_epochs == 0)
-                        )
-                    )
+                    should_eval = False
+                    if eval_dataloader is not None:
+                        if args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0:
+                            should_eval = True
+                        elif args.eval_every_n_epochs is not None:
+                            # Check if global_step crosses a multiple of steps_per_eval compared to the global_step
+                            steps_per_eval = num_update_steps_per_epoch * args.eval_every_n_epochs
+                            if int(global_step / steps_per_eval) > int((global_step - 1) / steps_per_eval):
+                                should_eval = True
 
                     eval_loss = None
                     if should_sampling or should_saving or should_eval:
@@ -3034,8 +3040,9 @@ def setup_parser_common() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--eval_every_n_epochs",
-        type=int,
+        type=float,
         default=None,
+        help="Works with float or int. Multiple evals per epoch or multiple epochs per eval"
     )
     parser.add_argument(
         "--save_last_n_epochs",
