@@ -346,15 +346,12 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, times
 
     SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
     """
-    if weighting_scheme == "sigma_sqrt" or weighting_scheme == "cosmap":
+    if weighting_scheme in ["sigma_sqrt", "cosmap", "f2k4b_fit"]:
         sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=5, dtype=dtype)
         if weighting_scheme == "sigma_sqrt":
             weighting = (sigmas**-2.0).float()
-        else:
-            bot = 1 - 2 * sigmas + 2 * sigmas**2
-            weighting = 2 / (math.pi * bot)
-    elif weighting_scheme == "f2k4b_fit":
-        weighting = (  # calculated from 25k timesteps seen
+        elif weighting_scheme == "f2k4b_fit":
+            weighting = (  # calculated from 25k timesteps seen
                 126.634286 * s**8
                 + -440.602230 * s**7
                 + 629.836258 * s**6
@@ -365,6 +362,9 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, times
                 + -0.942849 * s
                 + 0.607610
             )
+        else:
+            bot = 1 - 2 * sigmas + 2 * sigmas**2
+            weighting = 2 / (math.pi * bot)
     else:
         weighting = None  # torch.ones_like(sigmas)
     return weighting
