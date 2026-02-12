@@ -353,6 +353,18 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, times
         else:
             bot = 1 - 2 * sigmas + 2 * sigmas**2
             weighting = 2 / (math.pi * bot)
+    elif weighting_scheme == "f2k4b_fit":
+        weighting = (  # calculated from 25k timesteps seen
+                126.634286 * s**8
+                + -440.602230 * s**7
+                + 629.836258 * s**6
+                + -486.858273 * s**5
+                + 225.548413 * s**4
+                + -66.880159 * s**3
+                + 13.364406 * s**2
+                + -0.942849 * s
+                + 0.607610
+            )
     else:
         weighting = None  # torch.ones_like(sigmas)
     return weighting
@@ -2741,7 +2753,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         "--weighting_scheme",
         type=str,
         default="none",
-        choices=["logit_normal", "mode", "cosmap", "sigma_sqrt", "none"],
+        choices=["logit_normal", "mode", "cosmap", "sigma_sqrt", "f2k4b_fit", "none"],
         help="weighting scheme for timestep distribution. Default is none / タイムステップ分布の重み付けスキーム、デフォルトはnone",
     )
     parser.add_argument(
