@@ -350,17 +350,40 @@ def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, times
         sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=5, dtype=dtype)
         if weighting_scheme == "sigma_sqrt":
             weighting = (sigmas**-2.0).float()
-        elif weighting_scheme == "f2k4b_fit":
-            weighting = (  # calculated from 25k timesteps seen
-                126.634286 * s**8
-                + -440.602230 * s**7
-                + 629.836258 * s**6
-                + -486.858273 * s**5
-                + 225.548413 * s**4
-                + -66.880159 * s**3
-                + 13.364406 * s**2
-                + -0.942849 * s
-                + 0.607610
+        elif args.weighting_scheme == "f2k4b_fit":  # different timesteps & loss types flattened to ~1 loss
+            s = sigmas.float()  # TODO: is this needed?
+            f2k4b_coeffs = {  # https://i.imgur.com/1D2hXTB.png
+                # calculated from 34,396 timesteps
+                "pseudo-huber": [
+                    513.958626, -1810.451428, 2628.984083, -2073.358414,
+                    982.986141, -297.140533, 59.927878, -4.439620, 2.797695,
+                ],
+                # calculated from 28,928 timesteps
+                "mse": [
+                    58.098475, -134.001965, 106.049415, -46.322656,
+                    31.986373, -26.168052, 11.857081, -1.366032, 0.976480,
+                ],
+                # calculated from 9,600 timesteps
+                "td-pseudo-huber": [
+                    2712.515120, -11355.541446, 19978.195363, -19217.931872,
+                    11024.421382, -3886.119424, 849.750655, -115.990140, 13.866432,
+                ],
+                # calculated from 4,608 timesteps
+                "l1": [
+                    -174.221732, 696.273734, -1107.877970, 898.118346,
+                    -392.843876, 86.997195, -5.944004, -0.455059, 1.225240,
+                ]
+            }
+            weighting = (
+                f2k4b_coeffs[args.loss_type][0] * s**8
+                + f2k4b_coeffs[args.loss_type][1] * s**7
+                + f2k4b_coeffs[args.loss_type][2] * s**6
+                + f2k4b_coeffs[args.loss_type][3] * s**5
+                + f2k4b_coeffs[args.loss_type][4] * s**4
+                + f2k4b_coeffs[args.loss_type][5] * s**3
+                + f2k4b_coeffs[args.loss_type][6] * s**2
+                + f2k4b_coeffs[args.loss_type][7] * s
+                + f2k4b_coeffs[args.loss_type][8]
             )
         else:
             bot = 1 - 2 * sigmas + 2 * sigmas**2
