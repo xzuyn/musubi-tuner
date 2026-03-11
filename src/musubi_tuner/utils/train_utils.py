@@ -3,6 +3,7 @@ import logging
 import os
 import shutil
 from typing import Callable
+import glob
 
 import accelerate
 
@@ -61,22 +62,38 @@ def get_sanitized_config_or_none(args: argparse.Namespace):
 
 class LossRecorder:
     def __init__(self):
-        self.loss_list: list[float] = []
         self.loss_total: float = 0.0
+        self.count: int = 0
 
-    def add(self, *, epoch: int, step: int, loss: float) -> None:
-        if epoch == 0:
-            self.loss_list.append(loss)
-        else:
-            while len(self.loss_list) <= step:
-                self.loss_list.append(0.0)
-            self.loss_total -= self.loss_list[step]
-            self.loss_list[step] = loss
+    def add(self, *, loss: float) -> None:
         self.loss_total += loss
+        self.count += 1
 
     @property
     def moving_average(self) -> float:
-        return self.loss_total / len(self.loss_list)
+        if self.count == 0:
+            return 0.0
+        return self.loss_total / self.count
+
+    def state_dict(self) -> dict:
+        return {"loss_total": self.loss_total, "count": self.count}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        self.loss_total = state_dict["loss_total"]
+        self.count = state_dict["count"]
+
+
+class TrainingCounters:
+    """Holds training counters that should persist across resumes."""
+
+    def __init__(self):
+        self.total_timesteps: int = 0
+
+    def state_dict(self) -> dict:
+        return {"total_timesteps": self.total_timesteps}
+
+    def load_state_dict(self, state_dict: dict) -> None:
+        self.total_timesteps = state_dict["total_timesteps"]
 
 
 def get_epoch_ckpt_name(model_name, epoch_no: int):
@@ -149,17 +166,23 @@ def save_and_remove_state_stepwise(args: argparse.Namespace, accelerator: accele
         logger.info("uploading state to huggingface.")
         huggingface_utils.upload(args, state_dir, "/" + STEP_STATE_NAME.format(model_name, step_no))
 
-    last_n_steps = args.save_last_n_steps_state if args.save_last_n_steps_state else args.save_last_n_steps
-    if last_n_steps is not None:
-        # last_n_steps前のstep_noから、save_every_n_stepsの倍数のstep_noを計算して削除する
-        remove_step_no = step_no - last_n_steps - 1
-        remove_step_no = remove_step_no - (remove_step_no % args.save_every_n_steps)
+    if args.remove_old_states:
+        for old_state in glob.glob(os.path.join(args.output_dir, f"{model_name}-step*-state")):
+            if os.path.isdir(old_state) and old_state != state_dir:
+                logger.info(f"removing old state: {old_state}")
+                shutil.rmtree(old_state)
+    else:
+        last_n_steps = args.save_last_n_steps_state if args.save_last_n_steps_state else args.save_last_n_steps
+        if last_n_steps is not None:
+            # last_n_steps前のstep_noから、save_every_n_stepsの倍数のstep_noを計算して削除する
+            remove_step_no = step_no - last_n_steps - 1
+            remove_step_no = remove_step_no - (remove_step_no % args.save_every_n_steps)
 
-        if remove_step_no > 0:
-            state_dir_old = os.path.join(args.output_dir, STEP_STATE_NAME.format(model_name, remove_step_no))
-            if os.path.exists(state_dir_old):
-                logger.info(f"removing old state: {state_dir_old}")
-                shutil.rmtree(state_dir_old)
+            if remove_step_no > 0:
+                state_dir_old = os.path.join(args.output_dir, STEP_STATE_NAME.format(model_name, remove_step_no))
+                if os.path.exists(state_dir_old):
+                    logger.info(f"removing old state: {state_dir_old}")
+                    shutil.rmtree(state_dir_old)
 
 
 def save_state_on_train_end(args: argparse.Namespace, accelerator: accelerate.Accelerator):

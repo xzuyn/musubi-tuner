@@ -17,7 +17,7 @@ SharedEpoch = Optional["Synchronized[int]"]
 import numpy as np
 import torch
 from safetensors.torch import save_file, load_file
-from PIL import Image
+from PIL import Image, PngImagePlugin
 import cv2
 import av
 
@@ -29,6 +29,9 @@ import logging
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
+Image.MAX_IMAGE_PIXELS = None
+PngImagePlugin.MAX_TEXT_CHUNK = 10 * 1024 * 1024  # 10MB
+PngImagePlugin.MAX_TEXT_MEMORY = 100 * 1024 * 1024  # 100MB
 
 IMAGE_EXTENSIONS = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".PNG", ".JPG", ".JPEG", ".WEBP", ".BMP", ".avif", ".AVIF"]
 
@@ -1618,6 +1621,7 @@ class BaseDataset(torch.utils.data.Dataset):
         cache_directory: Optional[str] = None,
         debug_dataset: bool = False,
         architecture: str = "no_default",
+        is_eval: bool = False,
     ):
         self.resolution = resolution
         self.caption_extension = caption_extension
@@ -1628,6 +1632,7 @@ class BaseDataset(torch.utils.data.Dataset):
         self.cache_directory = cache_directory
         self.debug_dataset = debug_dataset
         self.architecture = architecture
+        self.is_eval = is_eval
         self.seed = None
         self.current_epoch = 0
         self.shared_epoch = None
@@ -1790,6 +1795,7 @@ class ImageDataset(BaseDataset):
         control_resolution: Optional[Tuple[int, int]] = None,
         debug_dataset: bool = False,
         architecture: str = "no_default",
+        is_eval: bool = False,
     ):
         super(ImageDataset, self).__init__(
             resolution,
@@ -1801,6 +1807,7 @@ class ImageDataset(BaseDataset):
             cache_directory,
             debug_dataset,
             architecture,
+            is_eval,
         )
         self.image_directory = image_directory
         self.image_jsonl_file = image_jsonl_file

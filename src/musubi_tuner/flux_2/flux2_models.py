@@ -8,6 +8,20 @@ from einops import rearrange
 from torch import Tensor, nn
 from torch.utils.checkpoint import checkpoint
 
+try:
+    from liger_kernel.transformers.rms_norm import LigerRMSNorm
+    from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+    _LIGER_AVAILABLE = True
+except ImportError:
+    _LIGER_AVAILABLE = False
+
+try:
+    import triton
+    import triton.language as tl
+    _TRITON_AVAILABLE = True
+except ImportError:
+    _TRITON_AVAILABLE = False
+
 from musubi_tuner.modules.attention import AttentionParams
 from musubi_tuner.modules.custom_offloading_utils import ModelOffloader
 from musubi_tuner.modules.attention import attention as unified_attention
@@ -78,14 +92,11 @@ class AutoEncoderParams:
     z_channels: int = 32
 
 
-def swish(x: Tensor) -> Tensor:
-    return x * torch.sigmoid(x)
-
-
 class AttnBlock(nn.Module):
-    def __init__(self, in_channels: int):
+    def __init__(self, in_channels: int, slice_size: int = None):
         super().__init__()
         self.in_channels = in_channels
+        self.slice_size = slice_size
 
         self.norm = nn.GroupNorm(num_groups=32, num_channels=in_channels, eps=1e-6, affine=True)
 
@@ -104,9 +115,25 @@ class AttnBlock(nn.Module):
         q = rearrange(q, "b c h w -> b 1 (h w) c").contiguous()
         k = rearrange(k, "b c h w -> b 1 (h w) c").contiguous()
         v = rearrange(v, "b c h w -> b 1 (h w) c").contiguous()
-        h_ = nn.functional.scaled_dot_product_attention(q, k, v)
+
+        if self.slice_size is not None:
+            h_ = self.sliced_sdpa(q, k, v)
+        else:
+            h_ = nn.functional.scaled_dot_product_attention(q, k, v)
 
         return rearrange(h_, "b 1 (h w) c -> b c h w", h=h, w=w, c=c, b=b)
+
+    def sliced_sdpa(self, q: Tensor, k: Tensor, v: Tensor) -> Tensor:
+        seq_len = q.shape[2]
+        slice_size = min(self.slice_size, seq_len)
+        output = torch.zeros_like(q)
+        for i in range(0, seq_len, slice_size):
+            end_idx = min(i + slice_size, seq_len)
+            q_slice = q[:, :, i:end_idx, :]
+            attn_slice = nn.functional.scaled_dot_product_attention(q_slice, k, v)
+            output[:, :, i:end_idx, :] = attn_slice
+
+        return output
 
     def forward(self, x: Tensor) -> Tensor:
         return x + self.proj_out(self.attention(x))
@@ -126,20 +153,26 @@ class ResnetBlock(nn.Module):
         if self.in_channels != self.out_channels:
             self.nin_shortcut = nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=1, padding=0)
 
-    def forward(self, x):
+    def _forward(self, x):
         h = x
         h = self.norm1(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv1(h)
 
         h = self.norm2(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv2(h)
 
         if self.in_channels != self.out_channels:
             x = self.nin_shortcut(x)
 
-        return x + h
+        h += x
+
+        return h
+
+    def forward(self, x):
+        # TODO: use dynmaic gc
+        return checkpoint(self._forward, x, use_reentrant=False)
 
 
 class Downsample(nn.Module):
@@ -219,24 +252,23 @@ class Encoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         # downsampling
-        hs = [self.conv_in(x)]
+        h = self.conv_in(x)
+        del x
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1])
+                h = self.down[i_level].block[i_block](h)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
             if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+                h = self.down[i_level].downsample(h)
 
         # middle
-        h = hs[-1]
         h = self.mid.block_1(h)
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h)
         # end
         h = self.norm_out(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv_out(h)
         h = self.quant_conv(h)
         return h
@@ -305,6 +337,7 @@ class Decoder(nn.Module):
 
         # z to block_in
         h = self.conv_in(z)
+        del z
 
         # middle
         h = self.mid.block_1(h)
@@ -324,7 +357,7 @@ class Decoder(nn.Module):
 
         # end
         h = self.norm_out(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv_out(h)
         return h
 
@@ -668,11 +701,12 @@ class SelfAttention(nn.Module):
 class SiLUActivation(nn.Module):
     def __init__(self):
         super().__init__()
-        self.gate_fn = nn.SiLU()
 
     def forward(self, x: Tensor) -> Tensor:
         x1, x2 = x.chunk(2, dim=-1)
-        return self.gate_fn(x1) * x2
+        if _LIGER_AVAILABLE:
+            return LigerSiLUMulFunction.apply(x1, x2)
+        return torch.nn.functional.silu(x1) * x2
 
 
 class Modulation(nn.Module):
@@ -709,8 +743,10 @@ class LastLayer(nn.Module):
             shift = shift[:, None, :]
             scale = scale[:, None, :]
         x = x.to(torch.float32)  # for numerical stability
-        x = (1 + scale) * self.norm_final(x) + shift
-        x = self.linear(x)
+        x_mod = self.norm_final(x)
+        x_mod.mul_(1 + scale)
+        x_mod.add_(shift)
+        x = self.linear(x_mod)
         return x.to(org_dtype)
 
 
@@ -747,10 +783,28 @@ class SingleStreamBlock(nn.Module):
     def _forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor], attn_params: AttentionParams) -> Tensor:
         mod_shift, mod_scale, mod_gate = mod
         del mod
-        x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
-        del mod_scale, mod_shift
+        x_mod = self.pre_norm(x)
+        x_mod.mul_(1 + mod_scale)
+        x_mod.add_(mod_shift)
 
-        qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim * self.mlp_mult_factor], dim=-1)
+        B, L, _ = x_mod.shape
+        qkv_dim = 3 * self.hidden_size
+        linear_chunk_size = 512 if L > 2560 else None
+
+        if linear_chunk_size:
+            device, dtype = x_mod.device, x_mod.dtype
+            qkv = torch.empty(B, L, qkv_dim, device=device, dtype=dtype)
+            for start in range(0, L, linear_chunk_size):
+                end = min(start + linear_chunk_size, L)
+                combined_chunk = self.linear1(x_mod[:, start:end])
+                qkv[:, start:end] = combined_chunk[:, :, :qkv_dim]
+                del combined_chunk
+            del x_mod
+        else:
+            linear1_out = self.linear1(x_mod)
+            del x_mod
+            qkv, mlp = torch.split(linear1_out, [qkv_dim, self.mlp_hidden_dim * self.mlp_mult_factor], dim=-1)
+            del linear1_out
 
         q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
         del qkv
@@ -761,8 +815,27 @@ class SingleStreamBlock(nn.Module):
         attn = attention(qkv_list, pe, attn_params)
         del qkv_list, pe
 
-        # compute activation in mlp stream, cat again and run second linear layer
-        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+        if linear_chunk_size:
+            x_mod = self.pre_norm(x)
+            x_mod.mul_(1 + mod_scale)
+            x_mod.add_(mod_shift)
+            del mod_scale, mod_shift
+            output = torch.empty(B, L, self.hidden_size, device=attn.device, dtype=attn.dtype)
+            for start in range(0, L, linear_chunk_size):
+                end = min(start + linear_chunk_size, L)
+                combined_chunk = self.linear1(x_mod[:, start:end])
+                mlp_chunk = combined_chunk[:, :, qkv_dim:]
+                del combined_chunk
+                output[:, start:end] = self.linear2(
+                    torch.cat((attn[:, start:end], self.mlp_act(mlp_chunk)), dim=2)
+                )
+                del mlp_chunk
+            del x_mod, attn
+        else:
+            del mod_scale, mod_shift
+            output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
+            del attn, mlp
+
         return x + mod_gate * output
 
     def forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor], attn_params: AttentionParams) -> Tensor:
@@ -771,6 +844,8 @@ class SingleStreamBlock(nn.Module):
             if self.activation_cpu_offloading:
                 forward_fn = create_cpu_offloading_wrapper(forward_fn, self.linear1.weight.device)
             return checkpoint(forward_fn, x, pe, mod, attn_params, use_reentrant=False)
+        elif x.shape[1] > 3072:  # above this would OOM  # TODO: make adjustable
+            return checkpoint(self._forward, x, pe, mod, attn_params, use_reentrant=False)
         else:
             return self._forward(x, pe, mod, attn_params)
 
@@ -835,7 +910,8 @@ class DoubleStreamBlock(nn.Module):
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
-        img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
+        img_modulated.mul_(1 + img_mod1_scale)
+        img_modulated.add_(img_mod1_shift)
         del img_mod1_scale, img_mod1_shift
 
         img_qkv = self.img_attn.qkv(img_modulated)
@@ -846,7 +922,8 @@ class DoubleStreamBlock(nn.Module):
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
-        txt_modulated = (1 + txt_mod1_scale) * txt_modulated + txt_mod1_shift
+        txt_modulated.mul_(1 + txt_mod1_scale)
+        txt_modulated.add_(txt_mod1_shift)
         del txt_mod1_scale, txt_mod1_shift
         txt_qkv = self.txt_attn.qkv(txt_modulated)
         del txt_modulated
@@ -874,14 +951,22 @@ class DoubleStreamBlock(nn.Module):
         # calculate the img blocks
         img = img + img_mod1_gate * self.img_attn.proj(img_attn)
         del img_mod1_gate, img_attn
-        img = img + img_mod2_gate * self.img_mlp((1 + img_mod2_scale) * (self.img_norm2(img)) + img_mod2_shift)
-        del img_mod2_gate, img_mod2_scale, img_mod2_shift
+        img_mlp_in = self.img_norm2(img)
+        img_mlp_in.mul_(1 + img_mod2_scale)
+        img_mlp_in.add_(img_mod2_shift)
+        del img_mod2_scale, img_mod2_shift
+        img = img + img_mod2_gate * self.img_mlp(img_mlp_in)
+        del img_mod2_gate, img_mlp_in
 
         # calculate the txt blocks
         txt = txt + txt_mod1_gate * self.txt_attn.proj(txt_attn)
         del txt_mod1_gate, txt_attn
-        txt = txt + txt_mod2_gate * self.txt_mlp((1 + txt_mod2_scale) * (self.txt_norm2(txt)) + txt_mod2_shift)
-        del txt_mod2_gate, txt_mod2_scale, txt_mod2_shift
+        txt_mlp_in = self.txt_norm2(txt)
+        txt_mlp_in.mul_(1 + txt_mod2_scale)
+        txt_mlp_in.add_(txt_mod2_shift)
+        del txt_mod2_scale, txt_mod2_shift
+        txt = txt + txt_mod2_gate * self.txt_mlp(txt_mlp_in)
+        del txt_mod2_gate, txt_mlp_in
         return img, txt
 
     def forward(
@@ -961,16 +1046,37 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     return embedding
 
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
+if _LIGER_AVAILABLE:
+    class RMSNorm(LigerRMSNorm):
+        def __init__(self, dim: int):
+            super().__init__(dim, eps=1e-6)
 
-    def forward(self, x: Tensor):
-        x_dtype = x.dtype
-        x = x.float()
-        rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
-        return (x * rrms).to(dtype=x_dtype) * self.scale
+        def state_dict(self, *args, **kwargs):
+            sd = super().state_dict(*args, **kwargs)
+            prefix = kwargs.get("prefix", "")
+            key_w = f"{prefix}weight"
+            key_s = f"{prefix}scale"
+            if key_w in sd:
+                sd[key_s] = sd.pop(key_w)
+            return sd
+
+        def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs):
+            key_s = f"{prefix}scale"
+            key_w = f"{prefix}weight"
+            if key_s in state_dict and key_w not in state_dict:
+                state_dict[key_w] = state_dict.pop(key_s)
+            super()._load_from_state_dict(state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs)
+else:
+    class RMSNorm(torch.nn.Module):
+        def __init__(self, dim: int):
+            super().__init__()
+            self.scale = nn.Parameter(torch.ones(dim))
+
+        def forward(self, x: Tensor):
+            x_dtype = x.dtype
+            x = x.float()
+            rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
+            return (x * rrms).to(dtype=x_dtype) * self.scale
 
 
 class QKNorm(torch.nn.Module):
@@ -979,16 +1085,28 @@ class QKNorm(torch.nn.Module):
         self.query_norm = RMSNorm(dim)
         self.key_norm = RMSNorm(dim)
 
-    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-        q = self.query_norm(q)
-        k = self.key_norm(k)
-        return q.to(v), k.to(v)
+    def forward(self, q: Tensor, k: Tensor, v: Tensor, chunk_size: int = 512) -> tuple[Tensor, Tensor]:
+        v_dtype = v.dtype
+        L = q.shape[2]
+
+        q_out = torch.empty_like(q)
+        for start in range(0, L, chunk_size):
+            end = min(start + chunk_size, L)
+            q_out[:, :, start:end] = self.query_norm(q[:, :, start:end].contiguous()).to(v_dtype)
+
+        k_out = torch.empty_like(k)
+        for start in range(0, L, chunk_size):
+            end = min(start + chunk_size, L)
+            k_out[:, :, start:end] = self.key_norm(k[:, :, start:end].contiguous()).to(v_dtype)
+
+        return q_out, k_out
 
 
 def attention(qkv_list: list[Tensor], pe: Tensor, attn_params: AttentionParams) -> Tensor:
     q, k, v = qkv_list
     del qkv_list
-    q, k = apply_rope(q, k, pe)
+    q = apply_rope_single(q, pe)
+    k = apply_rope_single(k, pe)
 
     q = q.transpose(1, 2)  # B, H, L, D -> B, L, H, D
     k = k.transpose(1, 2)  # B, H, L, D -> B, L, H, D
@@ -1009,12 +1127,136 @@ def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
     return out.float()
 
 
+
+if _TRITON_AVAILABLE:
+    @triton.jit
+    def _rope_kernel(
+        x_ptr,       # (B, H, L, D)            – input  (bf16/fp16/fp32)
+        f_ptr,       # (B, 1, L, D_half, 2, 2) – freqs_cis (float32)
+        o_ptr,       # (B, H, L, D)            – output (same dtype as x)
+        # runtime dim sizes
+        seq_len,
+        n_heads,
+        D_half,      # D // 2
+        # strides for x / o (same layout)
+        sx_b, sx_h, sx_l,
+        # strides for freqs_cis (last j-dim is always stride-1, contiguous)
+        sf_b, sf_l, sf_d, sf_i,
+        # compile-time flags
+        OUT_DTYPE:   tl.constexpr,  # tl.float16 / tl.bfloat16 / tl.float32
+        BLOCK_D:     tl.constexpr,  # >= D_half, next power-of-2
+        NEGATE_SIN:  tl.constexpr,  # False → forward,  True → backward
+    ):
+        # one program per (b, h, l) triple
+        pid   = tl.program_id(0)
+        l_idx = pid % seq_len
+        tmp   = pid // seq_len
+        h_idx = tmp % n_heads
+        b_idx = tmp // n_heads
+
+        x_base = x_ptr + b_idx * sx_b + h_idx * sx_h + l_idx * sx_l
+        o_base = o_ptr + b_idx * sx_b + h_idx * sx_h + l_idx * sx_l
+        # freqs_cis head-dim is always 0 (broadcast over H)
+        f_base = f_ptr + b_idx * sf_b + l_idx * sf_l
+
+        d_offs = tl.arange(0, BLOCK_D)
+        mask   = d_offs < D_half
+
+        # load input pairs, upcast to fp32 for numerical precision
+        x_even = tl.load(x_base + 2 * d_offs,     mask=mask, other=0.0).to(tl.float32)
+        x_odd  = tl.load(x_base + 2 * d_offs + 1, mask=mask, other=0.0).to(tl.float32)
+
+        # load cos / sin from the 2×2 rotation matrices
+        #   f[b, 0, l, d, 0, 0] = cos  →  offset: d*sf_d
+        #   f[b, 0, l, d, 1, 0] = sin  →  offset: d*sf_d + sf_i
+        cos_v = tl.load(f_base + d_offs * sf_d,        mask=mask, other=1.0)
+        sin_v = tl.load(f_base + d_offs * sf_d + sf_i, mask=mask, other=0.0)
+
+        # Backward pass uses the transpose rotation: negate sin
+        if NEGATE_SIN:
+            sin_v = -sin_v
+
+        # 2-D rotation
+        out_even = cos_v * x_even - sin_v * x_odd
+        out_odd  = sin_v * x_even + cos_v * x_odd
+
+        # store, casting back to original dtype
+        tl.store(o_base + 2 * d_offs,     out_even.to(OUT_DTYPE), mask=mask)
+        tl.store(o_base + 2 * d_offs + 1, out_odd.to(OUT_DTYPE),  mask=mask)
+
+
+    # Map torch dtypes to triton constexpr dtypes
+    _TRITON_DTYPE_MAP = {
+        torch.float16:  tl.float16,
+        torch.bfloat16: tl.bfloat16,
+        torch.float32:  tl.float32,
+    }
+
+    def _launch_rope_kernel(x: Tensor, freqs_cis: Tensor, negate_sin: bool) -> Tensor:
+        B, H, L, D = x.shape
+        D_half  = D // 2
+        BLOCK_D = triton.next_power_of_2(D_half)
+        out     = torch.empty_like(x)
+        _rope_kernel[(B * H * L,)](
+            x, freqs_cis, out,
+            L, H, D_half,
+            x.stride(0),          x.stride(1),          x.stride(2),
+            freqs_cis.stride(0),  freqs_cis.stride(2),
+            freqs_cis.stride(3),  freqs_cis.stride(4),
+            OUT_DTYPE=_TRITON_DTYPE_MAP[x.dtype],
+            BLOCK_D=BLOCK_D,
+            NEGATE_SIN=negate_sin,
+        )
+        return out
+
+
+    class _TritonRoPEFunction(torch.autograd.Function):
+        @staticmethod
+        def forward(ctx, x: Tensor, freqs_cis: Tensor) -> Tensor:
+            # x and freqs_cis must be contiguous before we pass raw pointers
+            x         = x.contiguous()
+            freqs_cis = freqs_cis.contiguous()
+            ctx.save_for_backward(freqs_cis)
+            return _launch_rope_kernel(x, freqs_cis, negate_sin=False)
+
+        @staticmethod
+        def backward(ctx, grad_out: Tensor) -> tuple:
+            (freqs_cis,) = ctx.saved_tensors
+            grad_out = grad_out.contiguous()
+            # Backward = forward with R^T = forward with sin negated
+            dx = _launch_rope_kernel(grad_out, freqs_cis, negate_sin=True)
+            return dx, None   # None → no grad for freqs_cis
+
+
+    def _triton_apply_rope_single(x: Tensor, freqs_cis: Tensor) -> Tensor:
+        if x.dtype not in _TRITON_DTYPE_MAP:
+            return _pytorch_apply_rope_single(x, freqs_cis)
+        return _TritonRoPEFunction.apply(x, freqs_cis)
+
+
+def _pytorch_apply_rope_single(x: Tensor, freqs_cis: Tensor, chunk_size: int = 512) -> Tensor:
+    L = x.shape[2]
+    out = torch.empty_like(x)
+    for start in range(0, L, chunk_size):
+        end = min(start + chunk_size, L)
+        xc = x[:, :, start:end]
+        x_ = xc.float().reshape(*xc.shape[:-1], -1, 1, 2)
+        fc = freqs_cis[:, :, start:end]
+        chunk_out = fc[..., 0] * x_[..., 0]
+        chunk_out.add_(fc[..., 1] * x_[..., 1])
+        out[:, :, start:end] = chunk_out.reshape(xc.shape).to(x.dtype)
+        del x_, fc, chunk_out
+    return out
+
+
+def apply_rope_single(x: Tensor, freqs_cis: Tensor, chunk_size: int = 512) -> Tensor:
+    if _TRITON_AVAILABLE and x.is_cuda:
+        return _triton_apply_rope_single(x, freqs_cis)
+    return _pytorch_apply_rope_single(x, freqs_cis, chunk_size=chunk_size)
+
+
 def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tensor]:
-    xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
-    xk_ = xk.float().reshape(*xk.shape[:-1], -1, 1, 2)
-    xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
-    xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
-    return xq_out.reshape(*xq.shape).type_as(xq), xk_out.reshape(*xk.shape).type_as(xk)
+    return apply_rope_single(xq, freqs_cis), apply_rope_single(xk, freqs_cis)
 
 
 # endregion

@@ -108,6 +108,13 @@ class LoRAModule(torch.nn.Module):
             if torch.rand(1) < self.module_dropout:
                 return org_forwarded
 
+        # Calculate base scale
+        combined_scale = self.multiplier * self.scale
+
+        # Adjust scale for rank dropout if training
+        if self.rank_dropout is not None and self.training:
+            combined_scale = combined_scale * (1.0 / (1.0 - self.rank_dropout))
+
         if self.split_dims is None:
             lx = self.lora_down(x)
 
@@ -122,41 +129,52 @@ class LoRAModule(torch.nn.Module):
                     mask = mask.unsqueeze(1)  # for Text Encoder
                 elif len(lx.size()) == 4:
                     mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
-                lx = lx * mask
+                lx.mul_(mask)
 
-                # scaling for rank dropout: treat as if the rank is changed
-                scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
+            # avoid allocating a second [B, L, out_dim] intermediate by writing
+            # lora_up directly into org_forwarded via addmm_ (conv2d falls back)
+            if isinstance(self.lora_up, torch.nn.Linear):
+                out_2d = org_forwarded.view(-1, org_forwarded.shape[-1])
+                lx_2d = lx.reshape(-1, lx.shape[-1])
+                out_2d.addmm_(lx_2d.to(out_2d.dtype), self.lora_up.weight.to(out_2d.dtype).t(), alpha=float(combined_scale))
+                if self.lora_up.bias is not None:  # standard LoRA has no bias
+                    org_forwarded.add_(self.lora_up.bias.to(out_2d.dtype) * combined_scale)
+                return org_forwarded
             else:
-                scale = self.scale
-
-            lx = self.lora_up(lx)
-
-            return org_forwarded + lx * self.multiplier * scale
+                lx = self.lora_up(lx)
+                return org_forwarded.add_(lx, alpha=combined_scale)
         else:
-            lxs = [lora_down(x) for lora_down in self.lora_down]
+            offset = 0
+            for i, (ldown, lup) in enumerate(zip(self.lora_down, self.lora_up)):
+                lx = ldown(x)
 
-            # normal dropout
-            if self.dropout is not None and self.training:
-                lxs = [torch.nn.functional.dropout(lx, p=self.dropout) for lx in lxs]
+                # normal dropout
+                if self.dropout is not None and self.training:
+                    lx = torch.nn.functional.dropout(lx, p=self.dropout)
 
-            # rank dropout
-            if self.rank_dropout is not None and self.training:
-                masks = [torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout for lx in lxs]
-                for i in range(len(lxs)):
+                # rank dropout
+                if self.rank_dropout is not None and self.training:
+                    # Generate mask for this specific split
+                    mask = torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout
                     if len(lx.size()) == 3:
-                        masks[i] = masks[i].unsqueeze(1)
+                        mask = mask.unsqueeze(1)
                     elif len(lx.size()) == 4:
-                        masks[i] = masks[i].unsqueeze(-1).unsqueeze(-1)
-                    lxs[i] = lxs[i] * masks[i]
+                        mask = mask.unsqueeze(-1).unsqueeze(-1)
+                    lx.mul_(mask)
 
-                # scaling for rank dropout: treat as if the rank is changed
-                scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
-            else:
-                scale = self.scale
+                # write directly into org_forwarded slice to avoid intermediate allocation
+                split_size = self.split_dims[i]
+                lx_2d = lx.reshape(-1, lx.shape[-1])
+                out_slice = org_forwarded[..., offset:offset + split_size]
+                org_forwarded[..., offset:offset + split_size].add_(
+                    lx_2d.to(out_slice.dtype).mm(lup.weight.to(out_slice.dtype).t()).view(out_slice.shape),
+                    alpha=float(combined_scale),
+                )
+                if lup.bias is not None:
+                    org_forwarded[..., offset:offset + split_size].add_(lup.bias.to(out_slice.dtype) * combined_scale)
+                offset += split_size
 
-            lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
-
-            return org_forwarded + torch.cat(lxs, dim=-1) * self.multiplier * scale
+            return org_forwarded
 
 
 class LoRAInfModule(LoRAModule):
@@ -743,6 +761,10 @@ class LoRANetwork(torch.nn.Module):
         return all_params, lr_descriptions
 
     def enable_gradient_checkpointing(self):
+        # not supported
+        pass
+
+    def disable_gradient_checkpointing(self):
         # not supported
         pass
 

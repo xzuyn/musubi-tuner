@@ -901,7 +901,7 @@ def prepare_latents(batch_size, num_layers, num_channels_latents, height, width,
     return latents
 
 
-CONDITION_IMAGE_RESOLUTION = (384, 384)
+CONDITION_IMAGE_RESOLUTION = (1024, 1024)
 VAE_IMAGE_RESOLUTION = (1024, 1024)
 
 

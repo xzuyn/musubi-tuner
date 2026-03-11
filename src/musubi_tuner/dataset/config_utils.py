@@ -40,6 +40,7 @@ class BaseDatasetParams:
     cache_directory: Optional[str] = None
     debug_dataset: bool = False
     architecture: str = "no_default"  # short style like "hv" or "wan"
+    is_eval: bool = False
 
 
 @dataclass
@@ -89,6 +90,7 @@ class DatasetGroupBlueprint:
 @dataclass
 class Blueprint:
     dataset_group: DatasetGroupBlueprint
+    eval_dataset_group: Optional[DatasetGroupBlueprint] = None
 
 
 class ConfigSanitizer:
@@ -116,6 +118,7 @@ class ConfigSanitizer:
         "resolution": functools.partial(__validate_and_convert_scalar_or_twodim.__func__, int),
         "enable_bucket": bool,
         "bucket_no_upscale": bool,
+        "is_eval": bool,
     }
     IMAGE_DATASET_DISTINCT_SCHEMA = {
         "image_directory": str,
@@ -226,7 +229,9 @@ class BlueprintGenerator:
         argparse_config = {k: v for k, v in vars(sanitized_argparse_namespace).items() if v is not None}
         general_config = sanitized_user_config.get("general", {})
 
-        dataset_blueprints = []
+        train_blueprints = []
+        eval_blueprints = []
+
         for dataset_config in sanitized_user_config.get("datasets", []):
             is_image_dataset = "image_directory" in dataset_config or "image_jsonl_file" in dataset_config
             if is_image_dataset:
@@ -237,11 +242,19 @@ class BlueprintGenerator:
             params = self.generate_params_by_fallbacks(
                 dataset_params_klass, [dataset_config, general_config, argparse_config, runtime_params]
             )
-            dataset_blueprints.append(DatasetBlueprint(is_image_dataset, params))
+            blueprint = DatasetBlueprint(is_image_dataset, params)
 
-        dataset_group_blueprint = DatasetGroupBlueprint(dataset_blueprints)
+            if params.is_eval:
+                eval_blueprints.append(blueprint)
+            else:
+                train_blueprints.append(blueprint)
 
-        return Blueprint(dataset_group_blueprint)
+        dataset_group_blueprint = DatasetGroupBlueprint(train_blueprints)
+        eval_dataset_group_blueprint = None
+        if len(eval_blueprints) > 0:
+            eval_dataset_group_blueprint = DatasetGroupBlueprint(eval_blueprints)
+
+        return Blueprint(dataset_group_blueprint, eval_dataset_group_blueprint)
 
     @staticmethod
     def generate_params_by_fallbacks(param_klass, fallbacks: Sequence[dict]):

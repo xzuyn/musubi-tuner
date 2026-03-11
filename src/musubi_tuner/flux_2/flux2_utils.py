@@ -118,6 +118,15 @@ def add_model_version_args(parser: argparse.ArgumentParser):
     parser.add_argument("--model_version", type=str, default="dev", choices=choices, help="model version")
 
 
+def add_vae_slicing_args(parser: argparse.ArgumentParser):
+    parser.add_argument(
+        "--vae_slice_size",
+        type=int,
+        default=None,
+        help="Use Sliced SDPA to trade lower speed for lower memory usage when creating latents",
+    )
+
+
 def is_fp8(dt):
     return dt in [torch.float8_e4m3fn, torch.float8_e4m3fnuz, torch.float8_e5m2, torch.float8_e5m2fnuz]
 
@@ -495,12 +504,17 @@ def load_flow_model(
 
 
 def load_ae(
-    ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False
+    ckpt_path: str, dtype: torch.dtype, device: Union[str, torch.device], disable_mmap: bool = False, slice_size: int = None
 ) -> flux2_models.AutoEncoder:
     logger.info("Building AutoEncoder")
     with init_empty_weights():
         # dev and schnell have the same AE params
         ae = flux2_models.AutoEncoder(flux2_models.AutoEncoderParams()).to(dtype)
+        if slice_size is not None:
+            logger.info(f"Setting AttnBlock SDPA slice_size to: {slice_size}")
+            for module in ae.modules():
+                if isinstance(module, AttnBlock):
+                    module.slice_size = slice_size
 
     logger.info(f"Loading state dict from {ckpt_path}")
     sd = load_split_weights(ckpt_path, device=str(device), disable_mmap=disable_mmap, dtype=dtype)
@@ -776,9 +790,9 @@ class Qwen3Embedder(nn.Module):
             model_inputs = self.tokenizer(
                 text,
                 return_tensors="pt",
-                padding="max_length",
-                truncation=True,
-                max_length=self.max_length,
+                padding=False,
+                truncation=False,
+                max_length=None,
             )
 
             all_input_ids.append(model_inputs["input_ids"])

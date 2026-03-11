@@ -220,7 +220,7 @@ class Flux2NetworkTrainer(NetworkTrainer):
         vae_path = args.vae
 
         logger.info(f"Loading AE model from {vae_path}")
-        ae = flux2_utils.load_ae(vae_path, dtype=vae_dtype, device="cpu", disable_mmap=True)
+        ae = flux2_utils.load_ae(vae_path, dtype=vae_dtype, device="cpu", disable_mmap=True, slice_size=args.vae_slice_size)
         return ae
 
     def load_transformer(
@@ -341,6 +341,7 @@ def flux2_setup_parser(parser: argparse.ArgumentParser) -> argparse.ArgumentPars
     parser.add_argument("--text_encoder", type=str, default=None, help="text encoder checkpoint path")
     parser.add_argument("--fp8_text_encoder", action="store_true", help="use fp8 for Text Encoder model")
     flux2_utils.add_model_version_args(parser)
+    flux2_utils.add_vae_slicing_args(parser)
     return parser
 
 

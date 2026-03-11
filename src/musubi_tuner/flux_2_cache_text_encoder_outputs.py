@@ -21,7 +21,7 @@ def encode_and_save_batch(text_embedder: torch.nn.Module, batch: list[ItemInfo],
     autocast_dtype = torch.bfloat16 if text_embedder.dtype.itemsize == 1 else text_embedder.dtype  # use bfloat16 for fp8 models
     with torch.autocast(device_type=device.type, dtype=autocast_dtype), torch.no_grad():
         ctx_vec = text_embedder(prompts)
-        ctx_vec = ctx_vec.cpu()  # [1, 512, 15360]
+        ctx_vec = ctx_vec.cpu()  # [1, ?, 15360]  # TODO: does this need to be on cpu?
 
     # save prompt cache
     for item, _ctx_vec in zip(batch, ctx_vec):
@@ -45,7 +45,13 @@ def main():
     blueprint = blueprint_generator.generate(user_config, args, architecture=model_version_info.architecture)
     train_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.dataset_group)
 
-    datasets = train_dataset_group.datasets
+    datasets = list(train_dataset_group.datasets)
+
+    # Load eval dataset config if exists
+    if blueprint.eval_dataset_group is not None:
+        eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(blueprint.eval_dataset_group)
+        datasets.extend(eval_dataset_group.datasets)
+        logger.info(f"Added {len(eval_dataset_group.datasets)} evaluation datasets for caching")
 
     # prepare cache files and paths: all_cache_files_for_dataset = exisiting cache files, all_cache_paths_for_dataset = all cache paths in the dataset
     all_cache_files_for_dataset, all_cache_paths_for_dataset = cache_text_encoder_outputs.prepare_cache_files_and_paths(datasets)

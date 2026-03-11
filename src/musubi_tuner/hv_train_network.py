@@ -21,6 +21,7 @@ from PIL import Image
 
 import huggingface_hub
 import toml
+import glob
 
 import torch
 from tqdm import tqdm
@@ -339,20 +340,22 @@ def get_sigmas(noise_scheduler, timesteps, device, n_dim=4, dtype=torch.float32)
     return sigma
 
 
-def compute_loss_weighting_for_sd3(weighting_scheme: str, noise_scheduler, timesteps, device, dtype):
+def compute_loss_weighting_for_sd3(args, noise_scheduler, timesteps, device, dtype):
     """Computes loss weighting scheme for SD3 training.
 
     Courtesy: This was contributed by Rafie Walker in https://github.com/huggingface/diffusers/pull/8528.
 
     SD3 paper reference: https://arxiv.org/abs/2403.03206v1.
     """
-    if weighting_scheme == "sigma_sqrt" or weighting_scheme == "cosmap":
+    if args.weighting_scheme in ["sigma_sqrt", "cosmap"]:
         sigmas = get_sigmas(noise_scheduler, timesteps, device, n_dim=5, dtype=dtype)
-        if weighting_scheme == "sigma_sqrt":
+        if args.weighting_scheme == "sigma_sqrt":
             weighting = (sigmas**-2.0).float()
-        else:
+        elif args.weighting_scheme == "cosmap":
             bot = 1 - 2 * sigmas + 2 * sigmas**2
             weighting = 2 / (math.pi * bot)
+        else:
+            weighting = None
     else:
         weighting = None  # torch.ones_like(sigmas)
     return weighting
@@ -392,14 +395,30 @@ class NetworkTrainer:
         keys_scaled=None,
         mean_norm=None,
         maximum_norm=None,
+        grad_norm=None,
+        eval_loss=None,
+        epoch_float=None,
+        current_timesteps=None,
+        total_timesteps=None,
     ):
         network_train_unet_only = True
-        logs = {"loss/current": current_loss, "loss/average": avr_loss}
+        logs = {"epoch/current": epoch_float, "loss/current": current_loss, "loss/average": avr_loss}
+
+        if grad_norm is not None:
+            logs["loss/grad_norm"] = grad_norm
+
+        if eval_loss is not None:
+            logs["loss/eval"] = eval_loss
 
         if keys_scaled is not None:
             logs["max_norm/keys_scaled"] = keys_scaled
             logs["max_norm/average_key_norm"] = mean_norm
             logs["max_norm/max_key_norm"] = maximum_norm
+
+        if current_timesteps is not None:
+            logs["timesteps/current"] = current_timesteps
+        if total_timesteps is not None:
+            logs["timesteps/total"] = total_timesteps
 
         lrs = lr_scheduler.get_last_lr()
         for i, lr in enumerate(lrs):
@@ -428,6 +447,10 @@ class NetworkTrainer:
                 logs[f"lr/d*lr/{lr_desc}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["lr"]
                 if "effective_lr" in optimizer.param_groups[i]:
                     logs[f"lr/d*eff_lr/{lr_desc}"] = optimizer.param_groups[i]["d"] * optimizer.param_groups[i]["effective_lr"]
+
+        # this is specific to https://github.com/xzuyn/CAME
+        if optimizer is not None:
+            logs.update(getattr(getattr(optimizer, "optimizer", optimizer), "step_logs", {}))
 
         return logs
 
@@ -705,7 +728,12 @@ class NetworkTrainer:
 
         if not args.resume_from_huggingface:
             logger.info(f"resume training from local state: {args.resume}")
-            accelerator.load_state(args.resume)
+            if args.resume_optimizer_only:
+                self._load_optimizer_state_only(accelerator, args.resume)
+            elif args.resume_optimizer_and_model_only:
+                self._load_optimizer_and_model_state_only(accelerator, args.resume)
+            else:
+                accelerator.load_state(args.resume)
             return True
 
         logger.info(f"resume training from huggingface state: {args.resume}")
@@ -749,9 +777,107 @@ class NetworkTrainer:
                 "No files found in the specified repo id/path/revision / 指定されたリポジトリID/パス/リビジョンにファイルが見つかりませんでした"
             )
         dirname = os.path.dirname(results[0])
-        accelerator.load_state(dirname)
+        if args.resume_optimizer_only:
+            self._load_optimizer_state_only(accelerator, dirname)
+        elif args.resume_optimizer_and_model_only:
+            self._load_optimizer_and_model_state_only(accelerator, dirname)
+        else:
+            accelerator.load_state(dirname)
 
         return True
+
+    def _load_optimizer_state_only(self, accelerator: Accelerator, state_dir: str):
+        """Load only optimizer states from a saved accelerator state directory.
+
+        This restores the optimizer's moment estimates / adaptive LR statistics so
+        that training can continue with a warm optimizer, while leaving everything
+        else (global step, LR scheduler, scaler, RNG states, model weights) at their
+        freshly-initialized values — exactly as if --resume had never been given.
+
+        Accelerate saves one file per optimizer, named:
+            optimizer.bin          (single optimizer, older accelerate versions)
+            optimizer_0.bin        (first optimizer, newer accelerate versions)
+            optimizer_1.bin ...    (additional optimizers if present)
+        """
+
+        optimizers = accelerator.optimizers  # list[torch.optim.Optimizer]
+
+        # Build the list of optimizer checkpoint files in the same order accelerate writes them.
+        # Try the indexed naming scheme first, fall back to the legacy single-file name.
+        optimizer_files = sorted(glob.glob(os.path.join(state_dir, "optimizer_*.bin")))
+        if not optimizer_files:
+            legacy = os.path.join(state_dir, "optimizer.bin")
+            if os.path.exists(legacy):
+                optimizer_files = [legacy]
+
+        if not optimizer_files:
+            raise FileNotFoundError(
+                f"No optimizer state files found in {state_dir}. "
+                "Expected 'optimizer.bin' or 'optimizer_0.bin', ..."
+            )
+
+        if len(optimizer_files) != len(optimizers):
+            logger.warning(
+                f"--resume_optimizer_only: found {len(optimizer_files)} optimizer file(s) "
+                f"but accelerator has {len(optimizers)} optimizer(s). "
+                "Will load as many as match."
+            )
+
+        for opt, opt_file in zip(optimizers, optimizer_files):
+            logger.info(f"loading optimizer state from {opt_file}")
+            opt_state = torch.load(opt_file, map_location="cpu")
+            opt.load_state_dict(opt_state)
+            logger.info("optimizer state loaded")
+
+    def _load_optimizer_and_model_state_only(self, accelerator: Accelerator, state_dir: str):
+        """Load optimizer states and model weights from a saved accelerator state directory.
+
+        This restores the optimizer's moment estimates / adaptive LR statistics and the
+        model weights so that training can continue with a warm optimizer and existing
+        checkpoint, while leaving everything else (global step, LR scheduler, scaler,
+        RNG states) at their freshly-initialized values.
+
+        Accelerate saves one file per optimizer, named:
+            optimizer.bin          (single optimizer, older accelerate versions)
+            optimizer_0.bin        (first optimizer, newer accelerate versions)
+            optimizer_1.bin ...    (additional optimizers if present)
+
+        Accelerate saves one file per model, named:
+            pytorch_model.bin          (single model, older accelerate versions)
+            pytorch_model_0.bin        (first model, newer accelerate versions)
+            pytorch_model_1.bin ...    (additional models if present)
+        """
+
+        # Load optimizer states
+        self._load_optimizer_state_only(accelerator, state_dir)
+
+        # Load model weights
+        models = accelerator.models  # list of prepared models
+
+        model_files = sorted(glob.glob(os.path.join(state_dir, "pytorch_model_*.bin")))
+        if not model_files:
+            legacy = os.path.join(state_dir, "pytorch_model.bin")
+            if os.path.exists(legacy):
+                model_files = [legacy]
+
+        if not model_files:
+            raise FileNotFoundError(
+                f"No model state files found in {state_dir}. "
+                "Expected 'pytorch_model.bin' or 'pytorch_model_0.bin', ..."
+            )
+
+        if len(model_files) != len(models):
+            logger.warning(
+                f"--resume_optimizer_and_model_only: found {len(model_files)} model file(s) "
+                f"but accelerator has {len(models)} model(s). "
+                "Will load as many as match."
+            )
+
+        for model, model_file in zip(models, model_files):
+            logger.info(f"loading model state from {model_file}")
+            model_state = torch.load(model_file, map_location="cpu")
+            accelerator.unwrap_model(model).load_state_dict(model_state)
+            logger.info("model state loaded")
 
     def get_bucketed_timestep(self) -> float:
         if self.num_timestep_buckets is None or self.num_timestep_buckets <= 1:
@@ -780,7 +906,10 @@ class NetworkTrainer:
         batch_size = noise.shape[0]
 
         if timesteps is not None:
-            timesteps = torch.tensor(timesteps, device=device)
+            try:
+                timesteps = timesteps.detach().clone()
+            except:
+                timesteps = torch.tensor(timesteps, device=device)
 
         # This function converts uniform distribution samples to logistic distribution samples.
         # The final distribution of the samples after shifting significantly differs from the original normal distribution.
@@ -824,6 +953,7 @@ class NetworkTrainer:
             or args.timestep_sampling == "qinglong_flux"
             or args.timestep_sampling == "qinglong_qwen"
             or args.timestep_sampling == "flux2_shift"
+            or args.timestep_sampling == "custom_flux2"
         ):
 
             def compute_sampling_timesteps(org_timesteps: Optional[torch.Tensor]) -> torch.Tensor:
@@ -929,6 +1059,51 @@ class NetworkTrainer:
 
                         t[logsnr_mask2] = t_logsnr2
 
+                elif args.timestep_sampling == "custom_flux2":
+                    if org_timesteps is not None:
+                        return (org_timesteps - 1.0) / 1000.0
+                    else:
+                        height, width = latents.shape[-2:]
+                        seq_len = round(width * height / (16 * 16))
+
+                        if not hasattr(self, "flux2_candidates_cache"):
+                            self.flux2_candidates_cache = {}
+
+                        if seq_len not in self.flux2_candidates_cache:
+                            # modified from: https://github.com/black-forest-labs/flux2/blob/b56ac61450f56ea7d32374c2fa54e77a262067f6/src/flux2/sampling.py#L240C1-L266C21
+                            A1, B1 = 8.73809524e-05, 1.89833333
+                            A2, B2 = 0.00016927, 0.45666666
+
+                            def flux2_scheduler(num_steps, image_seq_len):
+                                if image_seq_len > 4300:  # width*height > 1049*1049
+                                    mu = float(A2 * image_seq_len + B2)  # optimal μ for 200 steps
+                                else:
+                                    m_10 = A1 * image_seq_len + B1  # optimal μ for 10 steps
+                                    m_200 = A2 * image_seq_len + B2  # optimal μ for 200 steps
+                                    a = (m_200 - m_10) / 190.0  # slope between 10 and 200 steps
+                                    mu = float(a * num_steps + (m_200 - 200.0 * a))
+                                return math.exp(mu) / (math.exp(mu) + (1 / torch.linspace(1, 0, num_steps + 1) - 1))
+
+                            mixed_list = []
+                            for n in range(10, 101):  # all sigmas from all step counts from 10-100
+                                mixed_list.extend(flux2_scheduler(n, seq_len))
+                            mixed_list = list(set(mixed_list))  # keep only unique sigmas
+                            random.shuffle(mixed_list)
+
+                            candidates = torch.tensor(data=mixed_list, device=device)
+                            candidates = candidates[(candidates >= 0.001) & (candidates <= 0.999)]
+                            self.flux2_candidates_cache[seq_len] = candidates
+                        else:
+                            candidates = self.flux2_candidates_cache[seq_len]
+
+                        # pick a random center sigma for each item in the batch
+                        centers = candidates[torch.randint(low=0, high=candidates.shape[0], size=(batch_size,), device=device)]
+                        # bandwidth based on the spread of candidates, scaled by number of candidates
+                        bandwidth = (candidates.max() - candidates.min()) / (len(candidates) / 4)
+                        # sample final timesteps by adding gaussian noise to centers
+                        t = centers + torch.randn(batch_size, device=device) * bandwidth
+                        t = torch.clamp(t, min=0.001, max=0.999)
+
                 return t  # 0 to 1
 
             t_min = args.min_timestep if args.min_timestep is not None else 0
@@ -965,8 +1140,6 @@ class NetworkTrainer:
             timesteps = t * 1000.0
             t = t.view(-1, 1, 1, 1, 1) if latents.ndim == 5 else t.view(-1, 1, 1, 1)
             noisy_model_input = (1 - t) * latents + t * noise
-
-            timesteps += 1  # 1 to 1000
         else:
             # Sample a random timestep for each image
             # for weighting schemes where we sample timesteps non-uniformly
@@ -1024,7 +1197,7 @@ class NetworkTrainer:
         sampled_weighting = [0] * noise_scheduler.config.num_train_timesteps
         for i in tqdm(range(len(sampled_weighting))):
             timesteps = torch.tensor([i + 1], device="cpu")
-            weighting = compute_loss_weighting_for_sd3(args.weighting_scheme, noise_scheduler, timesteps, "cpu", torch.float16)
+            weighting = compute_loss_weighting_for_sd3(args, noise_scheduler, timesteps, "cpu", torch.float16)
             if weighting is None:
                 weighting = torch.tensor(1.0, device="cpu")
             elif torch.isinf(weighting).any():
@@ -1272,6 +1445,218 @@ class NetworkTrainer:
         # Move models back to initial state
         vae.to("cpu")
         clean_memory_on_device(device)
+
+    # TODO: make work with batch size >1
+    def compute_timestep_loss(
+        self,
+        args,
+        accelerator,
+        transformer,
+        latents,
+        batch,
+        noise_scheduler,
+        network_dtype,
+        dit_dtype,
+        training_progress: Optional[float] = None,
+    ) -> tuple[float, list[dict[str, float | str]]] | None:
+
+        total_loss = 0.0
+        loss_log = []
+        chosen_timesteps = []
+
+        if training_progress is not None and args.timestep_accumulation_steps > 1:
+            current_timestep_accumulation_steps = int((args.timestep_accumulation_steps - 1) * training_progress) + 1
+        else:
+            current_timestep_accumulation_steps = args.timestep_accumulation_steps
+
+        if args.debug_timestep_loss:
+            latent_res_str = f"{latents.shape[-2] * 16}x{latents.shape[-1] * 16}"
+            accelerator.print(f"DEBUG | res={latent_res_str}, latents={batch['latents'].shape}, ctx_vec={batch['ctx_vec'].shape}")
+
+        def pseudo_huber(model_pred, target, delta):
+            pred = model_pred.to(dtype=network_dtype, device=accelerator.device)
+            tgt = target.to(dtype=network_dtype, device=accelerator.device)
+
+            # convert delta to tensor on same device/dtype if needed
+            if torch.is_tensor(delta):
+                delta_t = delta.to(dtype=network_dtype, device=accelerator.device)
+            else:
+                delta_t = torch.tensor(delta, dtype=network_dtype, device=accelerator.device)
+
+            diff = (pred - tgt) / delta_t
+            loss = (delta_t ** 2) * (torch.sqrt(1.0 + diff * diff) - 1.0)
+
+            return loss.to(dtype=network_dtype, device=accelerator.device)
+
+        def do_loss_bwd(model_pred, target, current_timesteps):
+            if args.loss_type == "mse":
+                loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+            elif args.loss_type == "l1":
+                loss = torch.nn.functional.l1_loss(model_pred.to(network_dtype), target, reduction="none")
+            elif args.loss_type == "huber":
+                loss = torch.nn.functional.huber_loss(model_pred.to(network_dtype), target, reduction="none")
+            elif args.loss_type == "pseudo-huber":
+                loss = pseudo_huber(model_pred, target, 1.0)
+            elif args.loss_type == "td-pseudo-huber":  # (FORGIVING) loss during high noise, (PUNISHING) loss during low noise
+                loss = pseudo_huber(
+                    model_pred,
+                    target,
+                    2.0 - 1.9 * (current_timesteps / 1000.0),  # linear schedule T1000=0.1 -> T0=2.0
+                )
+            elif args.loss_type == "td-exp-pseudo-huber":  # (FORGIVING) loss during high noise, (PUNISHING) loss during low noise
+                loss = pseudo_huber(
+                    model_pred,
+                    target,
+                    2.0 * 0.05 ** (current_timesteps / 1000.0),  # exponential schedule T1000=0.1 -> T0=2.0
+                )
+            elif args.loss_type == "td-rev-pseudo-huber":  # (PUNISHING) loss during high noise, (FORGIVING) loss during low noise
+                loss = pseudo_huber(
+                    model_pred,
+                    target,
+                    0.1 + 1.9 * (current_timesteps / 1000.0),  # linear schedule T1000=2.0 -> T0=0.1
+                )
+            elif args.loss_type == "td-rev-exp-pseudo-huber":  # (PUNISHING) loss during high noise, (FORGIVING) loss during low noise
+                loss = pseudo_huber(
+                    model_pred,
+                    target,
+                    2.0 * 0.05 ** (1.0 - (current_timesteps / 1000.0)),  # exponential schedule T1000=2.0 -> T0=0.1
+                )
+            else:
+                loss, loss_type_used = None, None
+
+            weighting = compute_loss_weighting_for_sd3(
+                args, noise_scheduler, current_timesteps, accelerator.device, network_dtype,
+            )
+
+            weighted_loss = loss * weighting if weighting is not None else loss
+            accelerator.backward(weighted_loss.mean() * (1.0 / current_timestep_accumulation_steps))
+
+            return loss.mean().detach().item(), args.loss_type  # raw loss
+
+        if args.reuse_noise:
+            # Sample noise that we'll add to the latents
+            noise = torch.randn_like(latents)
+
+        for ta_idx in range(current_timestep_accumulation_steps):
+            if not args.reuse_noise:
+                # Sample noise that we'll add to the latents
+                noise = torch.randn_like(latents)
+
+            attempts = 0
+            while True:
+                noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                    args, noise, latents, batch["timesteps"], noise_scheduler,
+                    accelerator.device, dit_dtype,
+                )
+                t_val = timesteps.item()
+                if all(abs(t_val - chosen) >= (500.0 / (current_timestep_accumulation_steps + 1)) for chosen in chosen_timesteps) or attempts > 10:
+                    chosen_timesteps.append(t_val)
+                    break
+                attempts += 1
+
+            # Original noise conditional pass
+            model_pred, target = self.call_dit(
+                args, accelerator, transformer, latents, batch,
+                noise, noisy_model_input, timesteps, network_dtype,
+            )
+            current_loss, current_loss_type = do_loss_bwd(model_pred, target, timesteps)
+            loss_log.append(
+                {
+                    "timestep": t_val,
+                    "loss": current_loss,
+                    "loss_type": current_loss_type,
+                    "noise_type": "original",
+                    "cond_type": "original",
+                }
+            )
+            total_loss += current_loss
+            if args.debug_timestep_loss:
+                accelerator.print(f"DEBUG | res={latent_res_str}, ta_idx={ta_idx}, {loss_log[-1]}")
+
+        return total_loss / current_timestep_accumulation_steps, loss_log
+
+    def evaluate(
+        self,
+        accelerator,
+        args,
+        steps,
+        transformer,
+        eval_dataloader,
+        noise_scheduler,
+        dit_dtype,
+        network_dtype,
+    ) -> float | None:
+        if eval_dataloader is None:
+            return None
+
+        logger.info(f"running evaluation at step / 評価 ステップ: {steps}")
+
+        # Save random state to restore later for training reproducibility
+        rng_state = torch.get_rng_state()
+        cuda_rng_state = None
+        try:
+            cuda_rng_state = torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        except Exception as e:
+            print(e)
+            pass
+
+        transformer_eval_was_training = transformer.training
+        transformer.eval()
+
+        eval_losses = []
+        eval_seed = args.seed if args.seed is not None else 42
+
+        try:
+            # Set seed for consistent evaluation across entire run
+            torch.manual_seed(eval_seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(eval_seed)
+
+            for eval_batch in tqdm(eval_dataloader, desc="Evaluating", disable=not accelerator.is_local_main_process):
+                with torch.no_grad():  # TODO: move the for loop within this?
+                    eval_latents = eval_batch["latents"]
+                    eval_latents = self.scale_shift_latents(eval_latents)
+
+                    for val_ts in range(100, 901, 100):  # 100,200,300...700,800,900
+                        eval_noise = torch.randn_like(eval_latents)
+                        eval_noisy_input, eval_timesteps = self.get_noisy_model_input_and_timesteps(
+                            args=args,
+                            noise=eval_noise,
+                            latents=eval_latents,
+                            timesteps=[float(val_ts)],
+                            noise_scheduler=noise_scheduler,
+                            device=accelerator.device,
+                            dtype=dit_dtype,
+                        )
+
+                        eval_pred, eval_target = self.call_dit(
+                            args,
+                            accelerator,
+                            transformer,
+                            eval_latents,
+                            eval_batch,
+                            eval_noise,
+                            eval_noisy_input,
+                            eval_timesteps,
+                            network_dtype,
+                        )
+
+                        # mse, even if args.loss_type differs
+                        eval_loss = torch.nn.functional.mse_loss(
+                            eval_pred.to(network_dtype), eval_target.to(network_dtype), reduction="none"
+                        )
+                        eval_losses.append(eval_loss.mean().item())
+
+        finally:
+            # Restore training state
+            if transformer_eval_was_training:
+                transformer.train()
+
+            torch.set_rng_state(rng_state)
+            if cuda_rng_state is not None:
+                torch.cuda.set_rng_state(cuda_rng_state)
+
+        return sum(eval_losses) / len(eval_losses) if len(eval_losses) > 0 else 0.0
 
     # region model specific
 
@@ -1706,8 +2091,23 @@ class NetworkTrainer:
                 " / データセットに学習データがありません。latent/Text Encoderキャッシュを事前に作成したか確認してください"
             )
 
+        eval_dataset_group = None
+        if blueprint.eval_dataset_group is not None:
+            logger.info(f"Loading eval datasets")
+            eval_dataset_group = config_utils.generate_dataset_group_by_blueprint(
+                blueprint.eval_dataset_group,
+                training=True,
+                num_timestep_buckets=self.num_timestep_buckets,
+                shared_epoch=current_epoch,
+            )
+
         ds_for_collator = train_dataset_group if args.max_data_loader_n_workers == 0 else None
         collator = collator_class(current_epoch, ds_for_collator)
+
+        eval_collator = None
+        if eval_dataset_group is not None:
+            ds_for_eval_collator = eval_dataset_group if args.max_data_loader_n_workers == 0 else None
+            eval_collator = collator_class(current_epoch, ds_for_eval_collator)
 
         # prepare accelerator
         logger.info("preparing accelerator")
@@ -1873,7 +2273,19 @@ class NetworkTrainer:
             collate_fn=collator,
             num_workers=n_workers,
             persistent_workers=args.persistent_data_loader_workers,
+            generator=torch.Generator().manual_seed(args.seed),
         )
+
+        eval_dataloader = None
+        if eval_dataset_group is not None:
+            eval_dataloader = torch.utils.data.DataLoader(
+                eval_dataset_group,
+                batch_size=1,
+                shuffle=False,
+                collate_fn=eval_collator,
+                num_workers=n_workers,
+                persistent_workers=args.persistent_data_loader_workers,
+            )
 
         # calculate max_train_steps
         if args.max_train_epochs is not None:
@@ -1926,6 +2338,10 @@ class NetworkTrainer:
             transformer.__dict__["_orig_mod"] = transformer  # for annoying accelerator checks
 
         network, optimizer, train_dataloader, lr_scheduler = accelerator.prepare(network, optimizer, train_dataloader, lr_scheduler)
+
+        if eval_dataloader is not None:
+            eval_dataloader = accelerator.prepare(eval_dataloader)
+
         training_model = network
 
         if args.gradient_checkpointing:
@@ -1972,6 +2388,11 @@ class NetworkTrainer:
         accelerator.register_save_state_pre_hook(save_model_hook)
         accelerator.register_load_state_pre_hook(load_model_hook)
 
+        loss_recorder = train_utils.LossRecorder()
+        training_counters = train_utils.TrainingCounters()
+        accelerator.register_for_checkpointing(loss_recorder)
+        accelerator.register_for_checkpointing(training_counters)
+
         # resume from local or huggingface. accelerator.step is set
         self.resume_from_local_or_hf_if_specified(accelerator, args)  # accelerator.load_state(args.resume)
 
@@ -1985,12 +2406,14 @@ class NetworkTrainer:
         accelerator.print("running training / 学習開始")
         accelerator.print(f"  num train items / 学習画像、動画数: {train_dataset_group.num_train_items}")
         accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
+        accelerator.print(f"  optimization steps per epoch / エポックあたりの最適化ステップ = {num_update_steps_per_epoch}")
         accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
         accelerator.print(
             f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}"
         )
         # accelerator.print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
         accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
+        accelerator.print(f"  timestep accumulation steps / タイムステップ累積ステップ = {args.timestep_accumulation_steps}")
         accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
         # TODO refactor metadata creation and move to util
@@ -2005,6 +2428,7 @@ class NetworkTrainer:
             "ss_gradient_checkpointing": args.gradient_checkpointing,
             "ss_gradient_checkpointing_cpu_offload": args.gradient_checkpointing_cpu_offload,
             "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "ss_timestep_accumulation_steps": args.timestep_accumulation_steps,
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
             "ss_lr_scheduler": args.lr_scheduler,
@@ -2034,6 +2458,7 @@ class NetworkTrainer:
             "ss_timestep_sampling": args.timestep_sampling,
             "ss_sigmoid_scale": args.sigmoid_scale,
             "ss_discrete_flow_shift": args.discrete_flow_shift,
+            "ss_loss_type": args.loss_type,
         }
 
         datasets_metadata = []
@@ -2091,15 +2516,23 @@ class NetworkTrainer:
                 init_kwargs=init_kwargs,
             )
 
-        # TODO skip until initial step
-        progress_bar = tqdm(range(args.max_train_steps), smoothing=0, disable=not accelerator.is_local_main_process, desc="steps")
+        # accelerator.step counts every accumulate() context exit, not just the ones where
+        # sync_gradients=True. With gradient_accumulation_steps=N, that means it is N× the
+        # actual number of optimizer steps. Divide back down so global_step always tracks
+        # real optimizer updates (consistent with how it is incremented manually below).
+        global_step = accelerator.step // args.gradient_accumulation_steps  # restored from state if --resume was used, otherwise 0
+        epoch_to_start = global_step // num_update_steps_per_epoch
 
-        epoch_to_start = 0
-        global_step = 0
+        progress_bar = tqdm(
+            range(args.max_train_steps),
+            smoothing=0,
+            disable=not accelerator.is_local_main_process,
+            desc="steps",
+            initial=global_step,  # start the bar at the resumed step so elapsed-time/rate/ETA are computed correctly
+        )
         noise_scheduler = FlowMatchDiscreteScheduler(shift=args.discrete_flow_shift, reverse=True, solver="euler")
 
-        loss_recorder = train_utils.LossRecorder()
-        del train_dataset_group
+        del train_dataset_group  # TODO: also delete eval_dataset_group?
 
         # function for saving/removing
         save_dtype = dit_dtype
@@ -2154,9 +2587,6 @@ class NetworkTrainer:
             optimizer_eval_fn()
             self.sample_images(accelerator, args, 0, global_step, vae, transformer, sample_parameters, dit_dtype)
             optimizer_train_fn()
-        if len(accelerator.trackers) > 0:
-            # log empty object to commit the sample images to wandb
-            accelerator.log({}, step=0)
 
         # training loop
 
@@ -2171,6 +2601,28 @@ class NetworkTrainer:
 
         optimizer_train_fn()  # Set training mode
 
+        os.makedirs(args.output_dir, exist_ok=True)
+
+        if eval_dataloader is not None and (args.eval_every_n_steps is not None or args.eval_every_n_epochs is not None):
+            eval_loss = self.evaluate(
+                accelerator, args, global_step, transformer, eval_dataloader, noise_scheduler, dit_dtype, network_dtype
+            )
+            accelerator.log(
+                {
+                    "loss/eval": eval_loss,
+                    "epoch/current": 0.0,
+                    "timesteps/current": 0,
+                    "timesteps/total": 0,
+                },
+                step=0
+            )
+            progress_bar.set_postfix(**{"eval_loss": eval_loss})
+            eval_loss = None
+
+        step_loss_log = []  # only current step (grad accum)
+        # total_timesteps is restored from checkpoint via training_counters (registered above).
+        # On a fresh run it starts at 0; on resume it continues from where it was saved.
+        total_timesteps = training_counters.total_timesteps
         for epoch in range(epoch_to_start, num_train_epochs):
             accelerator.print(f"\nepoch {epoch + 1}/{num_train_epochs}")
             current_epoch.value = epoch + 1
@@ -2179,9 +2631,24 @@ class NetworkTrainer:
 
             accelerator.unwrap_model(network).on_epoch_start(transformer)
 
-            for step, batch in enumerate(train_dataloader):
+            # On the first resumed epoch, skip batches that were already processed.
+            # steps_done_in_epoch * gradient_accumulation_steps gives the number of
+            # dataloader batches that were consumed before the checkpoint was saved.
+            if epoch == epoch_to_start and global_step > 0:
+                steps_done_in_epoch = global_step % num_update_steps_per_epoch
+                batches_to_skip = (steps_done_in_epoch * args.gradient_accumulation_steps)
+                if batches_to_skip > 0:
+                    accelerator.print(f"skipping {batches_to_skip} dataloader batches to resume from step {global_step}")
+                    active_dataloader = accelerator.skip_first_batches(train_dataloader, batches_to_skip)
+                else:
+                    active_dataloader = train_dataloader
+            else:
+                active_dataloader = train_dataloader
+
+            for step, batch in enumerate(active_dataloader):
                 # torch.compiler.cudagraph_mark_step_begin() # for cudagraphs
 
+                grad_norm = None
                 latents = batch["latents"]
 
                 with accelerator.accumulate(training_model):
@@ -2189,80 +2656,99 @@ class NetworkTrainer:
 
                     latents = self.scale_shift_latents(latents)
 
-                    # Sample noise that we'll add to the latents
-                    noise = torch.randn_like(latents)
-
-                    # calculate model input and timesteps
-                    noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                        args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+                    loss, loss_log = self.compute_timestep_loss(
+                        args,
+                        accelerator,
+                        transformer,
+                        latents,  # isn't this already within batch?
+                        batch,
+                        noise_scheduler,
+                        network_dtype,
+                        dit_dtype,
+                        training_progress=(
+                            min((global_step + 1) / args.timestep_accumulation_warmup_steps, 1.0)
+                            if args.timestep_accumulation_warmup_steps > 0 else None
+                        ),
                     )
 
-                    weighting = compute_loss_weighting_for_sd3(
-                        args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
-                    )
+                    step_loss_log.extend(loss_log)  # need to collect for if gradient accumulation is being done
+                    total_timesteps += len(loss_log)
+                    training_counters.total_timesteps = total_timesteps
 
-                    model_pred, target = self.call_dit(
-                        args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
-                    )
-                    loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
-
-                    if weighting is not None:
-                        loss = loss * weighting
-                    # loss = loss.mean([1, 2, 3])
-                    # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
-                    # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
-
-                    loss = loss.mean()  # mean loss over all elements in batch
-
-                    accelerator.backward(loss)
                     if accelerator.sync_gradients:
-                        # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
-                        state = accelerate.PartialState()
-                        if state.distributed_type != accelerate.DistributedType.NO:
-                            for param in network.parameters():
-                                if param.grad is not None:
-                                    param.grad = accelerator.reduce(param.grad, reduction="mean")
-
-                        if args.max_grad_norm != 0.0:
-                            params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
-                            accelerator.clip_grad_norm_(params_to_clip, args.max_grad_norm)
+                        params_to_clip = accelerator.unwrap_model(network).get_trainable_params()
+                        grad_norm = accelerator.clip_grad_norm_(
+                            params_to_clip,
+                            args.max_grad_norm if args.max_grad_norm != 0.0 else float("inf"),
+                        )
+                        if grad_norm is not None:
+                            grad_norm = grad_norm.item() if hasattr(grad_norm, "item") else grad_norm
 
                     optimizer.step()
                     lr_scheduler.step()
                     optimizer.zero_grad(set_to_none=True)
 
-                if args.scale_weight_norms:
-                    keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
-                        args.scale_weight_norms, accelerator.device
-                    )
-                    max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
-                else:
-                    keys_scaled, mean_norm, maximum_norm = None, None, None
-
                 # Checks if the accelerator has performed an optimization step behind the scenes
                 if accelerator.sync_gradients:
-                    if global_step == 0:
-                        progress_bar.reset()  # exclude first step from progress bar, because it may take long due to initializations
-                    progress_bar.update(1)
+                    if args.scale_weight_norms:
+                        keys_scaled, mean_norm, maximum_norm = accelerator.unwrap_model(network).apply_max_norm_regularization(
+                            args.scale_weight_norms, accelerator.device
+                        )
+                        max_mean_logs = {"Keys Scaled": keys_scaled, "Average key norm": mean_norm}
+                    else:
+                        keys_scaled, mean_norm, maximum_norm = None, None, None
+
                     global_step += 1
+                    progress_bar.update(1)
 
                     # to avoid calling optimizer_eval_fn() too frequently, we call it only when we need to sample images or save the model
                     should_sampling = should_sample_images(args, global_step, epoch=None)
-                    should_saving = args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0
+                    should_saving = False
+                    if args.save_every_n_steps is not None and global_step % args.save_every_n_steps == 0:
+                        should_saving = True
+                    elif args.save_every_n_epochs is not None:
+                        steps_per_save = num_update_steps_per_epoch * args.save_every_n_epochs
+                        if math.floor(global_step / steps_per_save + 1e-8) > math.floor((global_step - 1) / steps_per_save + 1e-8):
+                            should_saving = True
+                    should_eval = False
+                    if eval_dataloader is not None:
+                        if args.eval_every_n_steps is not None and global_step % args.eval_every_n_steps == 0:
+                            should_eval = True
+                        elif args.eval_every_n_epochs is not None:
+                            steps_per_eval = num_update_steps_per_epoch * args.eval_every_n_epochs
+                            if math.floor(global_step / steps_per_eval + 1e-8) > math.floor((global_step - 1) / steps_per_eval + 1e-8):
+                                should_eval = True
 
-                    if should_sampling or should_saving:
+                    eval_loss = None
+                    if should_sampling or should_saving or should_eval:
                         optimizer_eval_fn()
+
+                        if should_eval:
+                            eval_loss = self.evaluate(
+                                accelerator,
+                                args,
+                                global_step,
+                                transformer,
+                                eval_dataloader,
+                                noise_scheduler,
+                                dit_dtype,
+                                network_dtype,
+                            )
+
                         if should_sampling:
                             self.sample_images(accelerator, args, None, global_step, vae, transformer, sample_parameters, dit_dtype)
 
                         if should_saving:
                             accelerator.wait_for_everyone()
+                            if args.save_state:
+                                # Must be called by ALL processes (not just main), because
+                                # accelerator.save_state() synchronizes across processes
+                                # internally. Calling it only from main would deadlock in
+                                # multi-GPU setups and produce incomplete checkpoints.
+                                train_utils.save_and_remove_state_stepwise(args, accelerator, global_step)
                             if accelerator.is_main_process:
                                 ckpt_name = train_utils.get_step_ckpt_name(args.output_name, global_step)
                                 save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch)
-
-                                if args.save_state:
-                                    train_utils.save_and_remove_state_stepwise(args, accelerator, global_step)
 
                                 remove_step_no = train_utils.get_remove_step_no(args, global_step)
                                 if remove_step_no is not None:
@@ -2270,45 +2756,48 @@ class NetworkTrainer:
                                     remove_model(remove_ckpt_name)
                         optimizer_train_fn()
 
-                current_loss = loss.detach().item()
-                loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
-                avr_loss: float = loss_recorder.moving_average
-                logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
-                progress_bar.set_postfix(**logs)
+                    loss_recorder.add(loss=loss)
+                    avr_loss: float = loss_recorder.moving_average
+                    logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
+                    if grad_norm is not None:
+                        logs["grad_norm"] = grad_norm
+                    if eval_loss is not None:
+                        logs["eval_loss"] = eval_loss
 
-                if args.scale_weight_norms:
-                    progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                    if args.scale_weight_norms:
+                        progress_bar.set_postfix(**{**max_mean_logs, **logs})
+                    else:
+                        progress_bar.set_postfix(**logs)
 
-                if len(accelerator.trackers) > 0:
-                    logs = self.generate_step_logs(
-                        args, current_loss, avr_loss, lr_scheduler, lr_descriptions, optimizer, keys_scaled, mean_norm, maximum_norm
-                    )
-                    accelerator.log(logs, step=global_step)
+                    # TODO: log scatter plot of raw_loss vs timestep
+                    if len(accelerator.trackers) > 0:
+                        logs = self.generate_step_logs(
+                            args,
+                            loss,
+                            avr_loss,
+                            lr_scheduler,
+                            lr_descriptions,
+                            optimizer,
+                            keys_scaled,
+                            mean_norm,
+                            maximum_norm,
+                            grad_norm,
+                            eval_loss,
+                            float(global_step / num_update_steps_per_epoch),
+                            len(step_loss_log),
+                            total_timesteps,
+                        )
+                        accelerator.log(logs, step=global_step)
+                        if args.debug_timestep_loss:
+                            with open(os.path.join(args.output_dir, "loss_log.jsonl"), "a") as f:
+                                for entry in step_loss_log:
+                                    f.write(json.dumps(entry) + "\n")
+                        step_loss_log = []
 
                 if global_step >= args.max_train_steps:
                     break
 
-            if len(accelerator.trackers) > 0:
-                logs = {"loss/epoch": loss_recorder.moving_average}
-                accelerator.log(logs, step=epoch + 1)
-
             accelerator.wait_for_everyone()
-
-            # save model at the end of epoch if needed
-            optimizer_eval_fn()
-            if args.save_every_n_epochs is not None:
-                saving = (epoch + 1) % args.save_every_n_epochs == 0 and (epoch + 1) < num_train_epochs
-                if is_main_process and saving:
-                    ckpt_name = train_utils.get_epoch_ckpt_name(args.output_name, epoch + 1)
-                    save_model(ckpt_name, accelerator.unwrap_model(network), global_step, epoch + 1)
-
-                    remove_epoch_no = train_utils.get_remove_epoch_no(args, epoch + 1)
-                    if remove_epoch_no is not None:
-                        remove_ckpt_name = train_utils.get_epoch_ckpt_name(args.output_name, remove_epoch_no)
-                        remove_model(remove_ckpt_name)
-
-                    if args.save_state:
-                        train_utils.save_and_remove_state_on_epoch_end(args, accelerator, epoch + 1)
 
             self.sample_images(accelerator, args, epoch + 1, global_step, vae, transformer, sample_parameters, dit_dtype)
             optimizer_train_fn()
@@ -2324,7 +2813,8 @@ class NetworkTrainer:
         accelerator.end_training()
         optimizer_eval_fn()
 
-        if is_main_process and (args.save_state or args.save_state_on_train_end):
+        if args.save_state or args.save_state_on_train_end:
+            # Must be called by ALL processes — same reason as save_and_remove_state_stepwise.
             train_utils.save_state_on_train_end(args, accelerator)
 
         if is_main_process:
@@ -2720,6 +3210,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
             "logsnr",
             "qinglong_flux",
             "qinglong_qwen",
+            "custom_flux2",
         ],
         default="sigma",
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
@@ -2883,10 +3374,32 @@ def setup_parser_common() -> argparse.ArgumentParser:
         help="base name of trained model file / 学習後のモデルの拡張子を除くファイル名",
     )
     parser.add_argument("--resume", type=str, default=None, help="saved state to resume training / 学習再開するモデルのstate")
+    parser.add_argument(
+        "--resume_optimizer_only",
+        action="store_true",
+        help=(
+            "when used with --resume, load only the optimizer state (moment estimates / adaptive LR statistics) "
+            "and discard everything else: global step, LR scheduler position, scaler, RNG states, and model weights "
+            "are all left at their fresh-start values. useful when switching to a new model or dataset but wanting "
+            "to carry over a warmed-up optimizer. "
+            "/ --resumeと併用時、optimizerの状態のみを読み込み、グローバルステップ・LRスケジューラ・スケーラー・乱数状態・モデル重みは初期値のまま維持する。"
+        ),
+    )
+    parser.add_argument(
+        "--resume_optimizer_and_model_only",
+        action="store_true",
+        help=(
+            "when used with --resume, load the optimizer state (moment estimates / adaptive LR statistics) and model "
+            "weights, while discarding everything else: global step, LR scheduler position, scaler, and RNG states "
+            "are all left at their fresh-start values. useful when switching to a new dataset but wanting to carry "
+            "over both a warmed-up optimizer and an existing model checkpoint. "
+            "/ --resumeと併用時、optimizerの状態とモデル重みを読み込み、グローバルステップ・LRスケジューラ・スケーラー・乱数状態は初期値のまま維持する。"
+        ),
+    )
 
     parser.add_argument(
         "--save_every_n_epochs",
-        type=int,
+        type=float,
         default=None,
         help="save checkpoint every N epochs / 学習中のモデルを指定エポックごとに保存する",
     )
@@ -2895,6 +3408,17 @@ def setup_parser_common() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="save checkpoint every N steps / 学習中のモデルを指定ステップごとに保存する",
+    )
+    parser.add_argument(
+        "--eval_every_n_steps",
+        type=int,
+        default=None,
+    )
+    parser.add_argument(
+        "--eval_every_n_epochs",
+        type=float,
+        default=None,
+        help="Works with float or int. Multiple evals per epoch or multiple epochs per eval"
     )
     parser.add_argument(
         "--save_last_n_epochs",
@@ -2930,6 +3454,11 @@ def setup_parser_common() -> argparse.ArgumentParser:
         action="store_true",
         help="save training state (including optimizer states etc.) on train end even if --save_state is not specified"
         " / --save_stateが未指定時にもoptimizerなど学習状態も含めたstateを学習終了時に保存する",
+    )
+    parser.add_argument(
+        "--remove_old_states",
+        action="store_true",
+        help="delete all old states ({model_name}-step*-state) after saving newest state / 最新の状態を保存した後、古い状態 ({model_name}-step*-state) をすべて削除します",
     )
 
     # SAI Model spec
@@ -3019,6 +3548,48 @@ def setup_parser_common() -> argparse.ArgumentParser:
     parser.add_argument("--dit", type=str, help="DiT checkpoint path / DiTのチェックポイントのパス")
     parser.add_argument("--vae", type=str, help="VAE checkpoint path / VAEのチェックポイントのパス")
     parser.add_argument("--vae_dtype", type=str, default=None, help="data type for VAE, default depends on model")
+
+    # for compute_timestep_loss
+    parser.add_argument(
+        "--debug_timestep_loss",
+        action="store_true",
+        help="debug mode for timestep loss calculation / タイムステップ損失計算のデバッグモード",
+    )
+    parser.add_argument(
+        "--timestep_accumulation_steps",
+        default=1,
+        type=int,
+        help="Run forward+backward over multiple timesteps instead of a single timestep every batch.\n"
+             "Similar to gradient accumulation, except it's across multiple timesteps instead of multiple batches.\n"
+             "Total forward+backward pass count = gradient_accumulation_steps * timestep_accumulation_steps.\n"
+             "BS1GA1 + timestep_accumulation_steps=1 = 1 forward+backward pass. Every step would see 1 timestep.\n"
+             "BS1GA1 + timestep_accumulation_steps=2 = 2 forward+backward passes. Every step would see 2 timesteps.\n"
+             "BS1GA2 + timestep_accumulation_steps=2 = 4 forward+backward passes. Every step would see 4 timesteps.\n"
+             "BS1GA2 + timestep_accumulation_steps=4 = 8 forward+backward passes. Every step would see 8 timesteps.\n"
+             "BS1GA4 + timestep_accumulation_steps=4 = 16 forward+backward passes. Every step would see 16 timesteps.\n"
+             "BS2GA4 + timestep_accumulation_steps=4 = 16 forward+backward passes. Every step would see 32 timesteps.\n"
+             "BS4GA4 + timestep_accumulation_steps=4 = 16 forward+backward passes. Every step would see 64 timesteps.",
+    )
+    parser.add_argument(
+        "--reuse_noise",
+        action="store_true",
+        help="reuse the same noise across timestep accumulation steps / タイムステップ蓄積ステップ間で同じノイズを再利用する",
+    )
+    parser.add_argument(
+        "--timestep_accumulation_warmup_steps",
+        default=0,
+        type=int,
+        help="warmup timestep accumulation steps from 1 to timestep_accumulation_steps over this many steps / このステップ数にわたってタイムステップ蓄積数を1からtimestep_accumulation_stepsまでウォームアップする",
+    )
+    parser.add_argument(
+        "--loss_type",
+        choices=[
+            "mse", "l1", "huber", "pseudo-huber", "td-pseudo-huber", "td-exp-pseudo-huber", "td-rev-pseudo-huber",
+            "td-rev-exp-pseudo-huber",
+        ],
+        default="mse",
+        help="type of loss function to use / 使用する損失関数の種類",
+    )
 
     return parser
 
