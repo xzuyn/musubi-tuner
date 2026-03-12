@@ -2516,11 +2516,7 @@ class NetworkTrainer:
                 init_kwargs=init_kwargs,
             )
 
-        # accelerator.step counts every accumulate() context exit, not just the ones where
-        # sync_gradients=True. With gradient_accumulation_steps=N, that means it is N× the
-        # actual number of optimizer steps. Divide back down so global_step always tracks
-        # real optimizer updates (consistent with how it is incremented manually below).
-        global_step = accelerator.step // args.gradient_accumulation_steps  # restored from state if --resume was used, otherwise 0
+        global_step = (loss_recorder.count + 1) if loss_recorder.count > 0 else (accelerator.step // args.gradient_accumulation_steps)
         epoch_to_start = global_step // num_update_steps_per_epoch
 
         progress_bar = tqdm(
