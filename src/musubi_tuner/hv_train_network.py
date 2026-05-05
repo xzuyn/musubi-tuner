@@ -1985,12 +1985,14 @@ class NetworkTrainer:
         accelerator.print("running training / 学習開始")
         accelerator.print(f"  num train items / 学習画像、動画数: {train_dataset_group.num_train_items}")
         accelerator.print(f"  num batches per epoch / 1epochのバッチ数: {len(train_dataloader)}")
+        accelerator.print(f"  optimization steps per epoch / エポックあたりの最適化ステップ = {num_update_steps_per_epoch}")
         accelerator.print(f"  num epochs / epoch数: {num_train_epochs}")
         accelerator.print(
             f"  batch size per device / バッチサイズ: {', '.join([str(d.batch_size) for d in train_dataset_group.datasets])}"
         )
         # accelerator.print(f"  total train batch size (with parallel & distributed & accumulation) / 総バッチサイズ（並列学習、勾配合計含む）: {total_batch_size}")
         accelerator.print(f"  gradient accumulation steps / 勾配を合計するステップ数 = {args.gradient_accumulation_steps}")
+        accelerator.print(f"  timestep accumulation steps / タイムステップ累積ステップ = {args.timestep_accumulation_steps}")
         accelerator.print(f"  total optimization steps / 学習ステップ数: {args.max_train_steps}")
 
         # TODO refactor metadata creation and move to util
@@ -2005,6 +2007,7 @@ class NetworkTrainer:
             "ss_gradient_checkpointing": args.gradient_checkpointing,
             "ss_gradient_checkpointing_cpu_offload": args.gradient_checkpointing_cpu_offload,
             "ss_gradient_accumulation_steps": args.gradient_accumulation_steps,
+            "ss_timestep_accumulation_steps": args.timestep_accumulation_steps,
             "ss_max_train_steps": args.max_train_steps,
             "ss_lr_warmup_steps": args.lr_warmup_steps,
             "ss_lr_scheduler": args.lr_scheduler,
@@ -2192,29 +2195,33 @@ class NetworkTrainer:
                     # Sample noise that we'll add to the latents
                     noise = torch.randn_like(latents)
 
-                    # calculate model input and timesteps
-                    noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
-                        args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
-                    )
+                    total_loss = 0.0
+                    for _ in range(args.timestep_accumulation_steps):
+                        # calculate model input and timesteps
+                        noisy_model_input, timesteps = self.get_noisy_model_input_and_timesteps(
+                            args, noise, latents, batch["timesteps"], noise_scheduler, accelerator.device, dit_dtype
+                        )
 
-                    weighting = compute_loss_weighting_for_sd3(
-                        args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
-                    )
+                        weighting = compute_loss_weighting_for_sd3(
+                            args.weighting_scheme, noise_scheduler, timesteps, accelerator.device, dit_dtype
+                        )
 
-                    model_pred, target = self.call_dit(
-                        args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
-                    )
-                    loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
+                        model_pred, target = self.call_dit(
+                            args, accelerator, transformer, latents, batch, noise, noisy_model_input, timesteps, network_dtype
+                        )
+                        loss = torch.nn.functional.mse_loss(model_pred.to(network_dtype), target, reduction="none")
 
-                    if weighting is not None:
-                        loss = loss * weighting
-                    # loss = loss.mean([1, 2, 3])
-                    # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
-                    # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
+                        if weighting is not None:
+                            loss = loss * weighting
+                        # loss = loss.mean([1, 2, 3])
+                        # # min snr gamma, scale v pred loss like noise pred, v pred like loss, debiased estimation etc.
+                        # loss = self.post_process_loss(loss, args, timesteps, noise_scheduler)
 
-                    loss = loss.mean()  # mean loss over all elements in batch
+                        loss = loss.mean()  # mean loss over all elements in batch
+                        total_loss += loss.detach().item()
 
-                    accelerator.backward(loss)
+                        accelerator.backward(loss * (1.0 / args.timestep_accumulation_steps))
+
                     if accelerator.sync_gradients:
                         # self.all_reduce_network(accelerator, network)  # sync DDP grad manually
                         state = accelerate.PartialState()
@@ -2270,7 +2277,7 @@ class NetworkTrainer:
                                     remove_model(remove_ckpt_name)
                         optimizer_train_fn()
 
-                current_loss = loss.detach().item()
+                current_loss = total_loss / args.timestep_accumulation_steps
                 loss_recorder.add(epoch=epoch, step=step, loss=current_loss)
                 avr_loss: float = loss_recorder.moving_average
                 logs = {"avr_loss": avr_loss}  # , "lr": lr_scheduler.get_last_lr()[0]}
@@ -2479,6 +2486,12 @@ def setup_parser_common() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="Number of updates steps to accumulate before performing a backward/update pass / 学習時に逆伝播をする前に勾配を合計するステップ数",
+    )
+    parser.add_argument(
+        "--timestep_accumulation_steps",
+        default=1,
+        type=int,
+        help="Run forward+backward over multiple timesteps instead of a single timestep every batch.",
     )
     parser.add_argument(
         "--mixed_precision",
