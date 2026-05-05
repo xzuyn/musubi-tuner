@@ -50,6 +50,7 @@ from musubi_tuner.hv_generate_video import save_images_grid, save_videos_grid, r
 import logging
 
 from musubi_tuner.utils import huggingface_utils, model_utils, train_utils, sai_model_spec
+from musubi_tuner.flux_2 import flux2_utils
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -860,7 +861,7 @@ class NetworkTrainer:
                         if args.timestep_sampling == "flux_shift":
                             mu = train_utils.get_lin_function(y1=0.5, y2=1.15)((h // 2) * (w // 2))
                         elif args.timestep_sampling == "flux2_shift":
-                            mu = train_utils.get_lin_function(y1=0.5, y2=1.15)(h * w)
+                            mu = flux2_utils.compute_empirical_mu(h * w, args.flux2_shift_steps)
                         elif args.timestep_sampling == "qwen_shift":
                             mu = train_utils.get_lin_function(x1=256, y1=0.5, x2=8192, y2=0.9)((h // 2) * (w // 2))
                         # def time_shift(mu: float, sigma: float, t: torch.Tensor):
@@ -2738,6 +2739,7 @@ def setup_parser_common() -> argparse.ArgumentParser:
         help="Method to sample timesteps: sigma-based, uniform random, sigmoid of random normal, shift of sigmoid and flux shift."
         " / タイムステップをサンプリングする方法：sigma、random uniform、random normalのsigmoid、sigmoidのシフト、flux shift。",
     )
+    parser.add_argument("--flux2_shift_steps", type=int, default=50)
     parser.add_argument(
         "--discrete_flow_shift",
         type=float,
