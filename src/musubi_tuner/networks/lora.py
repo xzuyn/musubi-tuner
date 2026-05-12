@@ -82,8 +82,8 @@ class LoRAModule(torch.nn.Module):
             for lora_up in self.lora_up:
                 torch.nn.init.zeros_(lora_up.weight)
 
-        if type(alpha) == torch.Tensor:
-            alpha = alpha.detach().float().numpy()  # without casting, bf16 causes error
+        if isinstance(alpha, torch.Tensor):
+            alpha = alpha.detach().float().item()  # without casting, bf16 causes error
         alpha = self.lora_dim if alpha is None or alpha == 0 else alpha
         self.scale = alpha / self.lora_dim
         self.register_buffer("alpha", torch.tensor(alpha))  # for save/load
@@ -113,7 +113,7 @@ class LoRAModule(torch.nn.Module):
 
             # normal dropout
             if self.dropout is not None and self.training:
-                lx = torch.nn.functional.dropout(lx, p=self.dropout)
+                lx = torch.nn.functional.dropout(lx, p=self.dropout, inplace=True)
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
@@ -122,41 +122,47 @@ class LoRAModule(torch.nn.Module):
                     mask = mask.unsqueeze(1)  # for Text Encoder
                 elif len(lx.size()) == 4:
                     mask = mask.unsqueeze(-1).unsqueeze(-1)  # for Conv2d
-                lx = lx * mask
+                lx.mul_(mask)
 
                 # scaling for rank dropout: treat as if the rank is changed
                 scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
             else:
                 scale = self.scale
 
-            lx = self.lora_up(lx)
-
-            return org_forwarded + lx * self.multiplier * scale
+            org_forwarded_2d = org_forwarded.view(-1, org_forwarded.shape[-1])
+            lx_2d = lx.reshape(-1, lx.shape[-1])
+            org_forwarded_2d.addmm_(lx_2d, self.lora_up.weight.to(lx_2d.dtype).t(), alpha=self.multiplier * scale)
+            return org_forwarded
         else:
             lxs = [lora_down(x) for lora_down in self.lora_down]
 
             # normal dropout
             if self.dropout is not None and self.training:
-                lxs = [torch.nn.functional.dropout(lx, p=self.dropout) for lx in lxs]
+                lxs = [torch.nn.functional.dropout(lx, p=self.dropout, inplace=True) for lx in lxs]
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
                 masks = [torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout for lx in lxs]
                 for i in range(len(lxs)):
-                    if len(lx.size()) == 3:
+                    if len(lx.size()) == 3:  # TODO: lx doesnt exist. why is this code here
                         masks[i] = masks[i].unsqueeze(1)
-                    elif len(lx.size()) == 4:
+                    elif len(lx.size()) == 4:  # TODO: lx doesnt exist. why is this code here
                         masks[i] = masks[i].unsqueeze(-1).unsqueeze(-1)
-                    lxs[i] = lxs[i] * masks[i]
+                    lxs[i].mul_(masks[i])
 
                 # scaling for rank dropout: treat as if the rank is changed
                 scale = self.scale * (1.0 / (1.0 - self.rank_dropout))  # redundant for readability
             else:
                 scale = self.scale
 
-            lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
-
-            return org_forwarded + torch.cat(lxs, dim=-1) * self.multiplier * scale
+            start_idx = 0
+            org_forwarded_2d = org_forwarded.view(-1, org_forwarded.shape[-1])
+            for lora_up, lx in zip(self.lora_up, lxs):
+                lx_2d = lx.reshape(-1, lx.shape[-1])
+                out_dim = lora_up.weight.shape[0]
+                org_forwarded_2d[:, start_idx:start_idx+out_dim].addmm_(lx_2d, lora_up.weight.to(lx_2d.dtype).t(), alpha=self.multiplier * scale)
+                start_idx += out_dim
+            return org_forwarded
 
 
 class LoRAInfModule(LoRAModule):
@@ -226,10 +232,6 @@ class LoRAInfModule(LoRAModule):
                 down_weight = sd[f"lora_down.{i}.weight"].to(device, torch.float, non_blocking=non_blocking)  # (rank, in_dim)
                 up_weight = sd[f"lora_up.{i}.weight"].to(device, torch.float, non_blocking=non_blocking)  # (split dim, rank)
 
-                # pad up_weight -> (total_dims, rank)
-                padded_up_weight = torch.zeros((total_dims, up_weight.size(0)), device=device, dtype=torch.float)
-                padded_up_weight[sum(self.split_dims[:i]) : sum(self.split_dims[: i + 1])] = up_weight
-
                 # merge weight
                 weight = weight + self.multiplier * (up_weight @ down_weight) * self.scale
 
@@ -268,12 +270,22 @@ class LoRAInfModule(LoRAModule):
         # logger.info(f"default_forward {self.lora_name} {x.size()}")
         if self.split_dims is None:
             lx = self.lora_down(x)
-            lx = self.lora_up(lx)
-            return self.org_forward(x) + lx * self.multiplier * self.scale
+            org_forwarded = self.org_forward(x)
+            org_forwarded_2d = org_forwarded.view(-1, org_forwarded.shape[-1])
+            lx_2d = lx.reshape(-1, lx.shape[-1])
+            org_forwarded_2d.addmm_(lx_2d, self.lora_up.weight.to(lx_2d.dtype).t(), alpha=self.multiplier * self.scale)
+            return org_forwarded
         else:
             lxs = [lora_down(x) for lora_down in self.lora_down]
-            lxs = [lora_up(lx) for lora_up, lx in zip(self.lora_up, lxs)]
-            return self.org_forward(x) + torch.cat(lxs, dim=-1) * self.multiplier * self.scale
+            org_forwarded = self.org_forward(x)
+            start_idx = 0
+            org_forwarded_2d = org_forwarded.view(-1, org_forwarded.shape[-1])
+            for lora_up, lx in zip(self.lora_up, lxs):
+                lx_2d = lx.reshape(-1, lx.shape[-1])
+                out_dim = lora_up.weight.shape[0]
+                org_forwarded_2d[:, start_idx:start_idx+out_dim].addmm_(lx_2d, lora_up.weight.to(lx_2d.dtype).t(), alpha=self.multiplier * self.scale)
+                start_idx += out_dim
+            return org_forwarded
 
     def forward(self, x):
         if not self.enabled:
@@ -767,7 +779,7 @@ class LoRANetwork(torch.nn.Module):
         if dtype is not None:
             for key in list(state_dict.keys()):
                 v = state_dict[key]
-                v = v.detach().clone().to("cpu").to(dtype)
+                v = v.detach().clone().to("cpu", dtype=dtype)
                 state_dict[key] = v
 
         if os.path.splitext(file)[1] == ".safetensors":
