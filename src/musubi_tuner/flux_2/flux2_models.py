@@ -910,6 +910,7 @@ class DoubleStreamBlock(nn.Module):
         img.add_(self.img_mlp(img_temp).mul_(img_mod2_gate))
         del img_mod2_gate, img_mod2_scale, img_mod2_shift, img_temp
 
+        # calculate the txt blocks
         txt.add_(self.txt_attn.proj(txt_attn).mul_(txt_mod1_gate))
         del txt_mod1_gate, txt_attn
 
