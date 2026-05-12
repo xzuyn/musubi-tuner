@@ -15,6 +15,7 @@ from musubi_tuner.modules.attention import attention as unified_attention
 from musubi_tuner.utils.model_utils import create_cpu_offloading_wrapper
 
 try:
+    from liger_kernel.transformers.rms_norm import LigerRMSNorm
     from liger_kernel.ops.swiglu import LigerSiLUMulFunction
     HAS_LIGER = True
 except:
@@ -996,16 +997,46 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     return embedding
 
 
-class RMSNorm(torch.nn.Module):
-    def __init__(self, dim: int):
-        super().__init__()
-        self.scale = nn.Parameter(torch.ones(dim))
+# Liger wants 'weight' but state uses 'scale'
+class RMSNorm(LigerRMSNorm if HAS_LIGER else nn.Module):
+    def __init__(self, dim: int, eps: float = 1e-6):
+        if HAS_LIGER:
+            super().__init__(dim, eps=eps)
+        else:
+            super().__init__()
+            self.eps = eps
+            self.scale = nn.Parameter(torch.ones(dim))
 
-    def forward(self, x: Tensor):
+    def forward(self, x: torch.Tensor):
+        if HAS_LIGER:
+            return super().forward(x)
         x_dtype = x.dtype
         x = x.float()
-        rrms = torch.rsqrt(torch.mean(x**2, dim=-1, keepdim=True) + 1e-6)
+        rrms = torch.rsqrt(torch.mean(x.pow(2), dim=-1, keepdim=True) + self.eps)
         return (x * rrms).to(dtype=x_dtype) * self.scale
+
+    def state_dict(self, *args, **kwargs):
+        sd = super().state_dict(*args, **kwargs)
+        prefix = kwargs.get("prefix", "")
+        key_w = f"{prefix}weight"
+        key_s = f"{prefix}scale"
+        if key_w in sd:
+            sd[key_s] = sd.pop(key_w)
+        return sd
+
+    def _load_from_state_dict(
+        self, state_dict, prefix, local_metadata,
+        strict, missing_keys, unexpected_keys, error_msgs,
+    ):
+        key_s = f"{prefix}scale"
+        key_w = f"{prefix}weight"
+
+        if HAS_LIGER and key_s in state_dict and key_w not in state_dict:
+            state_dict[key_w] = state_dict.pop(key_s)
+
+        super()._load_from_state_dict(
+            state_dict, prefix, local_metadata, strict, missing_keys, unexpected_keys, error_msgs
+        )
 
 
 class QKNorm(torch.nn.Module):
