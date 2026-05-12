@@ -844,10 +844,13 @@ class DoubleStreamBlock(nn.Module):
         del mod_img, mod_txt
 
         img_mod1_shift, img_mod1_scale, img_mod1_gate = img_mod1
+        del img_mod1
         img_mod2_shift, img_mod2_scale, img_mod2_gate = img_mod2
+        del img_mod2
         txt_mod1_shift, txt_mod1_scale, txt_mod1_gate = txt_mod1
+        del txt_mod1
         txt_mod2_shift, txt_mod2_scale, txt_mod2_gate = txt_mod2
-        del img_mod1, img_mod2, txt_mod1, txt_mod2
+        del txt_mod2
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
@@ -858,7 +861,7 @@ class DoubleStreamBlock(nn.Module):
         img_q = torch.nn.functional.linear(img_modulated, img_qkv_weight[:self.hidden_size])
         img_k = torch.nn.functional.linear(img_modulated, img_qkv_weight[self.hidden_size : 2 * self.hidden_size])
         img_v = torch.nn.functional.linear(img_modulated, img_qkv_weight[2 * self.hidden_size :])
-        del img_modulated
+        del img_qkv_weight, img_modulated
 
         img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
         img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
@@ -874,7 +877,7 @@ class DoubleStreamBlock(nn.Module):
         txt_q = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[:self.hidden_size])
         txt_k = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[self.hidden_size : 2 * self.hidden_size])
         txt_v = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[2 * self.hidden_size :])
-        del txt_modulated
+        del txt_qkv_weight, txt_modulated
 
         txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
         txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
@@ -883,9 +886,11 @@ class DoubleStreamBlock(nn.Module):
 
         txt_len = txt_q.shape[2]
         q = torch.cat((txt_q, img_q), dim=2)
+        del txt_q, img_q
         k = torch.cat((txt_k, img_k), dim=2)
+        del txt_k, img_k
         v = torch.cat((txt_v, img_v), dim=2)
-        del txt_q, img_q, txt_k, img_k, txt_v, img_v
+        del txt_v, img_v
 
         pe = torch.cat((pe_ctx, pe), dim=2)
         del pe_ctx
