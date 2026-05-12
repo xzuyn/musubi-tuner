@@ -710,9 +710,7 @@ class LastLayer(nn.Module):
             shift = shift[:, None, :]
             scale = scale[:, None, :]
         x = x.to(torch.float32)  # for numerical stability
-        x = self.norm_final(x)
-        x.mul_(1 + scale)
-        x.add_(shift)
+        x = (1 + scale) * self.norm_final(x) + shift
         x = self.linear(x)
         return x.to(org_dtype)
 
