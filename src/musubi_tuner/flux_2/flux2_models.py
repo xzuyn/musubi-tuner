@@ -14,6 +14,12 @@ from musubi_tuner.modules.attention import attention as unified_attention
 
 from musubi_tuner.utils.model_utils import create_cpu_offloading_wrapper
 
+try:
+    from liger_kernel.ops.swiglu import LigerSiLUMulFunction
+    HAS_LIGER = True
+except:
+    HAS_LIGER = False
+
 # import logging
 # logger = logging.getLogger(__name__)
 # logging.basicConfig(level=logging.INFO)
@@ -125,11 +131,11 @@ class ResnetBlock(nn.Module):
     def forward(self, x):
         h = x
         h = self.norm1(h)
-        h = torch.nn.functional.silu(h)
+        h = nn.functional.silu(h)
         h = self.conv1(h)
 
         h = self.norm2(h)
-        h = torch.nn.functional.silu(h)
+        h = nn.functional.silu(h)
         h = self.conv2(h)
 
         if self.in_channels != self.out_channels:
@@ -232,7 +238,7 @@ class Encoder(nn.Module):
         h = self.mid.block_2(h)
         # end
         h = self.norm_out(h)
-        h = torch.nn.functional.silu(h)
+        h = nn.functional.silu(h)
         h = self.conv_out(h)
         h = self.quant_conv(h)
         return h
@@ -320,7 +326,7 @@ class Decoder(nn.Module):
 
         # end
         h = self.norm_out(h)
-        h = torch.nn.functional.silu(h)
+        h = nn.functional.silu(h)
         h = self.conv_out(h)
         return h
 
@@ -662,13 +668,11 @@ class SelfAttention(nn.Module):
 
 
 class SiLUActivation(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.gate_fn = nn.SiLU()
-
     def forward(self, x: Tensor) -> Tensor:
         x1, x2 = x.chunk(2, dim=-1)
-        return self.gate_fn(x1) * x2
+        if HAS_LIGER:
+            return LigerSiLUMulFunction.apply(x1, x2)
+        return nn.functional.silu(x1) * x2
 
 
 class Modulation(nn.Module):
