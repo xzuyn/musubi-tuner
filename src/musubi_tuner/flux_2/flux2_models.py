@@ -751,8 +751,9 @@ class SingleStreamBlock(nn.Module):
 
         x_mod = self.pre_norm(x)
         x_mod.mul_(1 + mod_scale)
+        del mod_scale
         x_mod.add_(mod_shift)
-        del mod_scale, mod_shift
+        del mod_shift
 
         w = self.linear1.weight
         h = self.hidden_size
@@ -761,7 +762,7 @@ class SingleStreamBlock(nn.Module):
         k = torch.nn.functional.linear(x_mod, w[h : 2 * h])
         v = torch.nn.functional.linear(x_mod, w[2 * h : 3 * h])
         mlp = torch.nn.functional.linear(x_mod, w[3 * h :])
-        del x_mod
+        del w, x_mod
 
         q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
         k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
@@ -775,7 +776,7 @@ class SingleStreamBlock(nn.Module):
         del attn
 
         output.add_(torch.nn.functional.linear(self.mlp_act(mlp), self.linear2.weight[:, h:]))
-        del mlp
+        del h, mlp
 
         output.mul_(mod_gate)
 
@@ -907,8 +908,9 @@ class DoubleStreamBlock(nn.Module):
 
         img_temp = self.img_norm2(img)
         img_temp.mul_(1 + img_mod2_scale).add_(img_mod2_shift)
+        del img_mod2_scale, img_mod2_shift
         img.add_(self.img_mlp(img_temp).mul_(img_mod2_gate))
-        del img_mod2_gate, img_mod2_scale, img_mod2_shift, img_temp
+        del img_mod2_gate, img_temp
 
         # calculate the txt blocks
         txt.add_(self.txt_attn.proj(txt_attn).mul_(txt_mod1_gate))
@@ -916,8 +918,9 @@ class DoubleStreamBlock(nn.Module):
 
         txt_temp = self.txt_norm2(txt)
         txt_temp.mul_(1 + txt_mod2_scale).add_(txt_mod2_shift)
+        del txt_mod2_scale, txt_mod2_shift
         txt.add_(self.txt_mlp(txt_temp).mul_(txt_mod2_gate))
-        del txt_mod2_gate, txt_mod2_scale, txt_mod2_shift, txt_temp
+        del txt_mod2_gate, txt_temp
 
         return img, txt
 
