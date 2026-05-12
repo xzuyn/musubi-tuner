@@ -78,10 +78,6 @@ class AutoEncoderParams:
     z_channels: int = 32
 
 
-def swish(x: Tensor) -> Tensor:
-    return x * torch.sigmoid(x)
-
-
 class AttnBlock(nn.Module):
     def __init__(self, in_channels: int):
         super().__init__()
@@ -129,17 +125,19 @@ class ResnetBlock(nn.Module):
     def forward(self, x):
         h = x
         h = self.norm1(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv1(h)
 
         h = self.norm2(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv2(h)
 
         if self.in_channels != self.out_channels:
             x = self.nin_shortcut(x)
 
-        return x + h
+        h += x
+
+        return h
 
 
 class Downsample(nn.Module):
@@ -219,24 +217,22 @@ class Encoder(nn.Module):
 
     def forward(self, x: Tensor) -> Tensor:
         # downsampling
-        hs = [self.conv_in(x)]
+        h = self.conv_in(x)
         for i_level in range(self.num_resolutions):
             for i_block in range(self.num_res_blocks):
-                h = self.down[i_level].block[i_block](hs[-1])
+                h = self.down[i_level].block[i_block](h)
                 if len(self.down[i_level].attn) > 0:
                     h = self.down[i_level].attn[i_block](h)
-                hs.append(h)
             if i_level != self.num_resolutions - 1:
-                hs.append(self.down[i_level].downsample(hs[-1]))
+                h = self.down[i_level].downsample(h)
 
         # middle
-        h = hs[-1]
         h = self.mid.block_1(h)
         h = self.mid.attn_1(h)
         h = self.mid.block_2(h)
         # end
         h = self.norm_out(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv_out(h)
         h = self.quant_conv(h)
         return h
@@ -324,7 +320,7 @@ class Decoder(nn.Module):
 
         # end
         h = self.norm_out(h)
-        h = swish(h)
+        h = torch.nn.functional.silu(h)
         h = self.conv_out(h)
         return h
 
@@ -709,7 +705,9 @@ class LastLayer(nn.Module):
             shift = shift[:, None, :]
             scale = scale[:, None, :]
         x = x.to(torch.float32)  # for numerical stability
-        x = (1 + scale) * self.norm_final(x) + shift
+        x = self.norm_final(x)
+        x.mul_(1 + scale)
+        x.add_(shift)
         x = self.linear(x)
         return x.to(org_dtype)
 
@@ -747,23 +745,38 @@ class SingleStreamBlock(nn.Module):
     def _forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor], attn_params: AttentionParams) -> Tensor:
         mod_shift, mod_scale, mod_gate = mod
         del mod
-        x_mod = (1 + mod_scale) * self.pre_norm(x) + mod_shift
+
+        x_mod = self.pre_norm(x)
+        x_mod.mul_(1 + mod_scale)
+        x_mod.add_(mod_shift)
         del mod_scale, mod_shift
 
-        qkv, mlp = torch.split(self.linear1(x_mod), [3 * self.hidden_size, self.mlp_hidden_dim * self.mlp_mult_factor], dim=-1)
+        w = self.linear1.weight
+        h = self.hidden_size
 
-        q, k, v = rearrange(qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        del qkv
+        q = torch.nn.functional.linear(x_mod, w[:h])
+        k = torch.nn.functional.linear(x_mod, w[h : 2 * h])
+        v = torch.nn.functional.linear(x_mod, w[2 * h : 3 * h])
+        mlp = torch.nn.functional.linear(x_mod, w[3 * h :])
+        del x_mod
+
+        q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
+        k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
+        v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
+
         q, k = self.norm(q, k, v)
+        attn = attention([q, k, v], pe, attn_params)
+        del q, k, v, pe
 
-        qkv_list = [q, k, v]
-        del q, k, v
-        attn = attention(qkv_list, pe, attn_params)
-        del qkv_list, pe
+        output = torch.nn.functional.linear(attn, self.linear2.weight[:, :h])
+        del attn
 
-        # compute activation in mlp stream, cat again and run second linear layer
-        output = self.linear2(torch.cat((attn, self.mlp_act(mlp)), 2))
-        return x + mod_gate * output
+        output.add_(torch.nn.functional.linear(self.mlp_act(mlp), self.linear2.weight[:, h:]))
+        del mlp
+
+        output.mul_(mod_gate)
+
+        return x + output
 
     def forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor], attn_params: AttentionParams) -> Tensor:
         if self.training and self.gradient_checkpointing:
@@ -835,53 +848,68 @@ class DoubleStreamBlock(nn.Module):
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
-        img_modulated = (1 + img_mod1_scale) * img_modulated + img_mod1_shift
+        img_modulated.mul_(1 + img_mod1_scale).add_(img_mod1_shift)
         del img_mod1_scale, img_mod1_shift
 
-        img_qkv = self.img_attn.qkv(img_modulated)
+        img_qkv_weight = self.img_attn.qkv.weight
+        img_q = torch.nn.functional.linear(img_modulated, img_qkv_weight[:self.hidden_size])
+        img_k = torch.nn.functional.linear(img_modulated, img_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        img_v = torch.nn.functional.linear(img_modulated, img_qkv_weight[2 * self.hidden_size :])
         del img_modulated
-        img_q, img_k, img_v = rearrange(img_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        del img_qkv
+
+        img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
+        img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
+        img_v = rearrange(img_v, "B L (H D) -> B H L D", H=self.num_heads)
         img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
-        txt_modulated = (1 + txt_mod1_scale) * txt_modulated + txt_mod1_shift
+        txt_modulated.mul_(1 + txt_mod1_scale).add_(txt_mod1_shift)
         del txt_mod1_scale, txt_mod1_shift
-        txt_qkv = self.txt_attn.qkv(txt_modulated)
+
+        txt_qkv_weight = self.txt_attn.qkv.weight
+        txt_q = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[:self.hidden_size])
+        txt_k = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        txt_v = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[2 * self.hidden_size :])
         del txt_modulated
-        txt_q, txt_k, txt_v = rearrange(txt_qkv, "B L (K H D) -> K B H L D", K=3, H=self.num_heads)
-        del txt_qkv
+
+        txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
+        txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
+        txt_v = rearrange(txt_v, "B L (H D) -> B H L D", H=self.num_heads)
         txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
 
         txt_len = txt_q.shape[2]
         q = torch.cat((txt_q, img_q), dim=2)
-        del txt_q, img_q
         k = torch.cat((txt_k, img_k), dim=2)
-        del txt_k, img_k
         v = torch.cat((txt_v, img_v), dim=2)
-        del txt_v, img_v
+        del txt_q, img_q, txt_k, img_k, txt_v, img_v
 
         pe = torch.cat((pe_ctx, pe), dim=2)
         del pe_ctx
-        qkv_list = [q, k, v]
-        del q, k, v
-        attn = attention(qkv_list, pe, attn_params)
-        del qkv_list, pe
+
+        attn = attention([q, k, v], pe, attn_params)
+        del q, k, v, pe
+
         txt_attn, img_attn = attn[:, :txt_len], attn[:, txt_len:]
         del attn
 
         # calculate the img blocks
-        img = img + img_mod1_gate * self.img_attn.proj(img_attn)
+        img.add_(self.img_attn.proj(img_attn).mul_(img_mod1_gate))
         del img_mod1_gate, img_attn
-        img = img + img_mod2_gate * self.img_mlp((1 + img_mod2_scale) * (self.img_norm2(img)) + img_mod2_shift)
-        del img_mod2_gate, img_mod2_scale, img_mod2_shift
 
-        # calculate the txt blocks
-        txt = txt + txt_mod1_gate * self.txt_attn.proj(txt_attn)
+        img_temp = self.img_norm2(img)
+        img_temp.mul_(1 + img_mod2_scale).add_(img_mod2_shift)
+        img.add_(self.img_mlp(img_temp).mul_(img_mod2_gate))
+        del img_mod2_gate, img_mod2_scale, img_mod2_shift, img_temp
+
+        txt.add_(self.txt_attn.proj(txt_attn).mul_(txt_mod1_gate))
         del txt_mod1_gate, txt_attn
-        txt = txt + txt_mod2_gate * self.txt_mlp((1 + txt_mod2_scale) * (self.txt_norm2(txt)) + txt_mod2_shift)
-        del txt_mod2_gate, txt_mod2_scale, txt_mod2_shift
+
+        txt_temp = self.txt_norm2(txt)
+        txt_temp.mul_(1 + txt_mod2_scale).add_(txt_mod2_shift)
+        txt.add_(self.txt_mlp(txt_temp).mul_(txt_mod2_gate))
+        del txt_mod2_gate, txt_mod2_scale, txt_mod2_shift, txt_temp
+
         return img, txt
 
     def forward(
@@ -953,7 +981,10 @@ def timestep_embedding(t: Tensor, dim, max_period=10000, time_factor: float = 10
     freqs = torch.exp(-math.log(max_period) * torch.arange(start=0, end=half, device=t.device, dtype=torch.float32) / half)
 
     args = t[:, None].float() * freqs[None]
-    embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+    cos_args = torch.cos(args)
+    sin_args = torch.sin(args)
+    del args
+    embedding = torch.cat([cos_args, sin_args], dim=-1)
     if dim % 2:
         embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
     if torch.is_floating_point(t):
@@ -988,7 +1019,8 @@ class QKNorm(torch.nn.Module):
 def attention(qkv_list: list[Tensor], pe: Tensor, attn_params: AttentionParams) -> Tensor:
     q, k, v = qkv_list
     del qkv_list
-    q, k = apply_rope(q, k, pe)
+    q = apply_rope(q, pe)
+    k = apply_rope(k, pe)
 
     q = q.transpose(1, 2)  # B, H, L, D -> B, L, H, D
     k = k.transpose(1, 2)  # B, H, L, D -> B, L, H, D
@@ -1004,17 +1036,19 @@ def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
     scale = torch.arange(0, dim, 2, dtype=torch.float64, device=pos.device) / dim
     omega = 1.0 / (theta**scale)
     out = torch.einsum("...n,d->...nd", pos, omega)
-    out = torch.stack([torch.cos(out), -torch.sin(out), torch.sin(out), torch.cos(out)], dim=-1)
+    cos_out = torch.cos(out)
+    sin_out = torch.sin(out)
+    out = torch.stack([cos_out, -sin_out, sin_out, cos_out], dim=-1)
     out = rearrange(out, "b n d (i j) -> b n d i j", i=2, j=2)
     return out.float()
 
 
-def apply_rope(xq: Tensor, xk: Tensor, freqs_cis: Tensor) -> tuple[Tensor, Tensor]:
-    xq_ = xq.float().reshape(*xq.shape[:-1], -1, 1, 2)
-    xk_ = xk.float().reshape(*xk.shape[:-1], -1, 1, 2)
-    xq_out = freqs_cis[..., 0] * xq_[..., 0] + freqs_cis[..., 1] * xq_[..., 1]
-    xk_out = freqs_cis[..., 0] * xk_[..., 0] + freqs_cis[..., 1] * xk_[..., 1]
-    return xq_out.reshape(*xq.shape).type_as(xq), xk_out.reshape(*xk.shape).type_as(xk)
+def apply_rope(x: Tensor, freqs_cis: Tensor) -> Tensor:
+    x_ = x.float().view(*x.shape[:-1], -1, 1, 2)
+    x_out = torch.mul(freqs_cis[..., 0], x_[..., 0])
+    x_out.addcmul_(freqs_cis[..., 1], x_[..., 1])
+    del x_
+    return x_out.reshape(*x.shape).type_as(x)
 
 
 # endregion
