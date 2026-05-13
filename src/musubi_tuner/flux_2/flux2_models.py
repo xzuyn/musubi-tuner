@@ -768,7 +768,9 @@ class SingleStreamBlock(nn.Module):
         k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
         v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
 
-        q, k = self.norm(q, k, v)
+        v_dtype = v.dtype
+        q = self.norm.norm_q(q, v_dtype)
+        k = self.norm.norm_k(k, v_dtype)
         attn = attention([q, k, v], pe, attn_params)
         del q, k, v, pe
 
@@ -867,7 +869,10 @@ class DoubleStreamBlock(nn.Module):
         img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
         img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
         img_v = rearrange(img_v, "B L (H D) -> B H L D", H=self.num_heads)
-        img_q, img_k = self.img_attn.norm(img_q, img_k, img_v)
+
+        img_v_dtype = img_v.dtype
+        img_q = self.img_attn.norm.norm_q(img_q, img_v_dtype)
+        img_k = self.img_attn.norm.norm_k(img_k, img_v_dtype)
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
@@ -883,7 +888,10 @@ class DoubleStreamBlock(nn.Module):
         txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
         txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
         txt_v = rearrange(txt_v, "B L (H D) -> B H L D", H=self.num_heads)
-        txt_q, txt_k = self.txt_attn.norm(txt_q, txt_k, txt_v)
+
+        txt_v_dtype = txt_v.dtype
+        txt_q = self.txt_attn.norm.norm_q(txt_q, txt_v_dtype)
+        txt_k = self.txt_attn.norm.norm_k(txt_k, txt_v_dtype)
 
         txt_len = txt_q.shape[2]
         q = torch.cat((txt_q, img_q), dim=2)
@@ -1052,10 +1060,11 @@ class QKNorm(torch.nn.Module):
         self.query_norm = RMSNorm(dim)
         self.key_norm = RMSNorm(dim)
 
-    def forward(self, q: Tensor, k: Tensor, v: Tensor) -> tuple[Tensor, Tensor]:
-        q = self.query_norm(q)
-        k = self.key_norm(k)
-        return q.to(v), k.to(v)
+    def norm_q(self, q: Tensor, dtype: torch.dtype) -> Tensor:
+        return self.query_norm(q).to(dtype=dtype)
+
+    def norm_k(self, k: Tensor, dtype: torch.dtype) -> Tensor:
+        return self.key_norm(k).to(dtype=dtype)
 
 
 def attention(qkv_list: list[Tensor], pe: Tensor, attn_params: AttentionParams) -> Tensor:
