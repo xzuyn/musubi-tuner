@@ -757,20 +757,22 @@ class SingleStreamBlock(nn.Module):
 
         w = self.linear1.weight
         h = self.hidden_size
+        dtype = x_mod.dtype
 
         q = torch.nn.functional.linear(x_mod, w[:h])
+        q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
+        q = self.norm.norm_q(q, dtype)
+
         k = torch.nn.functional.linear(x_mod, w[h : 2 * h])
+        k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
+        k = self.norm.norm_k(k, dtype)
+
         v = torch.nn.functional.linear(x_mod, w[2 * h : 3 * h])
+        v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
+
         mlp = torch.nn.functional.linear(x_mod, w[3 * h :])
         del w, x_mod
 
-        q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
-        k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
-        v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
-
-        v_dtype = v.dtype
-        q = self.norm.norm_q(q, v_dtype)
-        k = self.norm.norm_k(k, v_dtype)
         attn = attention([q, k, v], pe, attn_params)
         del q, k, v, pe
 
@@ -860,38 +862,40 @@ class DoubleStreamBlock(nn.Module):
         img_modulated.mul_(1 + img_mod1_scale).add_(img_mod1_shift)
         del img_mod1_scale, img_mod1_shift
 
+        img_dtype = img_modulated.dtype
         img_qkv_weight = self.img_attn.qkv.weight
+
         img_q = torch.nn.functional.linear(img_modulated, img_qkv_weight[:self.hidden_size])
+        img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
+        img_q = self.img_attn.norm.norm_q(img_q, img_dtype)
+
         img_k = torch.nn.functional.linear(img_modulated, img_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
+        img_k = self.img_attn.norm.norm_k(img_k, img_dtype)
+
         img_v = torch.nn.functional.linear(img_modulated, img_qkv_weight[2 * self.hidden_size :])
         del img_qkv_weight, img_modulated
-
-        img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
-        img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
         img_v = rearrange(img_v, "B L (H D) -> B H L D", H=self.num_heads)
-
-        img_v_dtype = img_v.dtype
-        img_q = self.img_attn.norm.norm_q(img_q, img_v_dtype)
-        img_k = self.img_attn.norm.norm_k(img_k, img_v_dtype)
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
         txt_modulated.mul_(1 + txt_mod1_scale).add_(txt_mod1_shift)
         del txt_mod1_scale, txt_mod1_shift
 
+        txt_dtype = txt_modulated.dtype
         txt_qkv_weight = self.txt_attn.qkv.weight
+
         txt_q = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[:self.hidden_size])
+        txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
+        txt_q = self.txt_attn.norm.norm_q(txt_q, txt_dtype)
+
         txt_k = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
+        txt_k = self.txt_attn.norm.norm_k(txt_k, txt_dtype)
+
         txt_v = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[2 * self.hidden_size :])
         del txt_qkv_weight, txt_modulated
-
-        txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
-        txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
         txt_v = rearrange(txt_v, "B L (H D) -> B H L D", H=self.num_heads)
-
-        txt_v_dtype = txt_v.dtype
-        txt_q = self.txt_attn.norm.norm_q(txt_q, txt_v_dtype)
-        txt_k = self.txt_attn.norm.norm_k(txt_k, txt_v_dtype)
 
         txt_len = txt_q.shape[2]
         q = torch.cat((txt_q, img_q), dim=2)
