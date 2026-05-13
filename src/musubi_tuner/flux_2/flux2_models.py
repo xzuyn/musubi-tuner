@@ -1073,18 +1073,16 @@ class QKNorm(torch.nn.Module):
 
 
 def attention(qkv_list: list[Tensor], pe: Tensor, attn_params: AttentionParams) -> Tensor:
-    q, k, v = qkv_list
-    del qkv_list
-    q = apply_rope(q, pe)
-    k = apply_rope(k, pe)
+    q = qkv_list.pop(0)
+    q = apply_rope(q, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
 
-    q = q.transpose(1, 2)  # B, H, L, D -> B, L, H, D
-    k = k.transpose(1, 2)  # B, H, L, D -> B, L, H, D
-    v = v.transpose(1, 2)  # B, H, L, D -> B, L, H, D
-    qkv_list = [q, k, v]
-    del q, k, v
-    x = unified_attention(qkv_list, attn_params=attn_params)
-    return x
+    k = qkv_list.pop(0)
+    k = apply_rope(k, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+
+    v = qkv_list.pop(0)
+    v = v.transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+
+    return unified_attention([q, k, v], attn_params=attn_params)
 
 
 def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
