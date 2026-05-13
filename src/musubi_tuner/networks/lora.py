@@ -144,10 +144,9 @@ class LoRAModule(torch.nn.Module):
             if self.rank_dropout is not None and self.training:
                 masks = [torch.rand((lx.size(0), self.lora_dim), device=lx.device) > self.rank_dropout for lx in lxs]
                 for i in range(len(lxs)):
-                    num_dims = lxs[i].dim()
-                    if len(num_dims) == 3:
+                    if lxs[i].dim() == 3:
                         masks[i] = masks[i].unsqueeze(1)
-                    elif len(num_dims) == 4:
+                    elif lxs[i].dim() == 4:
                         masks[i] = masks[i].unsqueeze(-1).unsqueeze(-1)
                     lxs[i].mul_(masks[i])
 
