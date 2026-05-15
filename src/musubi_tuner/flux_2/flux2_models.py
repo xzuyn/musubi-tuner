@@ -187,7 +187,7 @@ class Encoder(nn.Module):
         z_channels: int,
     ):
         super().__init__()
-        self.quant_conv = torch.nn.Conv2d(2 * z_channels, 2 * z_channels, 1)
+        self.quant_conv = nn.Conv2d(2 * z_channels, 2 * z_channels, 1)
         self.ch = ch
         self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
@@ -262,7 +262,7 @@ class Decoder(nn.Module):
         z_channels: int,
     ):
         super().__init__()
-        self.post_quant_conv = torch.nn.Conv2d(z_channels, z_channels, 1)
+        self.post_quant_conv = nn.Conv2d(z_channels, z_channels, 1)
         self.ch = ch
         self.num_resolutions = len(ch_mult)
         self.num_res_blocks = num_res_blocks
@@ -362,7 +362,7 @@ class AutoEncoder(nn.Module):
         self.bn_eps = 1e-4
         self.bn_momentum = 0.1
         self.ps = [2, 2]
-        self.bn = torch.nn.BatchNorm2d(
+        self.bn = nn.BatchNorm2d(
             math.prod(self.ps) * params.z_channels,
             eps=self.bn_eps,
             momentum=self.bn_momentum,
@@ -765,27 +765,27 @@ class SingleStreamBlock(nn.Module):
         h = self.hidden_size
         dtype = x_mod.dtype
 
-        q = torch.nn.functional.linear(x_mod, w[:h])
+        q = nn.functional.linear(x_mod, w[:h])
         q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
         q = self.norm.norm_q(q, dtype)
 
-        k = torch.nn.functional.linear(x_mod, w[h : 2 * h])
+        k = nn.functional.linear(x_mod, w[h : 2 * h])
         k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
         k = self.norm.norm_k(k, dtype)
 
-        v = torch.nn.functional.linear(x_mod, w[2 * h : 3 * h])
+        v = nn.functional.linear(x_mod, w[2 * h : 3 * h])
         v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
 
-        mlp = torch.nn.functional.linear(x_mod, w[3 * h :])
+        mlp = nn.functional.linear(x_mod, w[3 * h :])
         del w, x_mod
 
         attn = attention([q, k, v], pe, attn_params)
         del q, k, v, pe
 
-        output = torch.nn.functional.linear(attn, self.linear2.weight[:, :h])
+        output = nn.functional.linear(attn, self.linear2.weight[:, :h])
         del attn
 
-        output.add_(torch.nn.functional.linear(self.mlp_act(mlp), self.linear2.weight[:, h:]))
+        output.add_(nn.functional.linear(self.mlp_act(mlp), self.linear2.weight[:, h:]))
         del h, mlp
 
         output.mul_(mod_gate)
@@ -871,15 +871,15 @@ class DoubleStreamBlock(nn.Module):
         img_dtype = img_modulated.dtype
         img_qkv_weight = self.img_attn.qkv.weight
 
-        img_q = torch.nn.functional.linear(img_modulated, img_qkv_weight[:self.hidden_size])
+        img_q = nn.functional.linear(img_modulated, img_qkv_weight[:self.hidden_size])
         img_q = rearrange(img_q, "B L (H D) -> B H L D", H=self.num_heads)
         img_q = self.img_attn.norm.norm_q(img_q, img_dtype)
 
-        img_k = torch.nn.functional.linear(img_modulated, img_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        img_k = nn.functional.linear(img_modulated, img_qkv_weight[self.hidden_size : 2 * self.hidden_size])
         img_k = rearrange(img_k, "B L (H D) -> B H L D", H=self.num_heads)
         img_k = self.img_attn.norm.norm_k(img_k, img_dtype)
 
-        img_v = torch.nn.functional.linear(img_modulated, img_qkv_weight[2 * self.hidden_size :])
+        img_v = nn.functional.linear(img_modulated, img_qkv_weight[2 * self.hidden_size :])
         del img_qkv_weight, img_modulated
         img_v = rearrange(img_v, "B L (H D) -> B H L D", H=self.num_heads)
 
@@ -891,15 +891,15 @@ class DoubleStreamBlock(nn.Module):
         txt_dtype = txt_modulated.dtype
         txt_qkv_weight = self.txt_attn.qkv.weight
 
-        txt_q = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[:self.hidden_size])
+        txt_q = nn.functional.linear(txt_modulated, txt_qkv_weight[:self.hidden_size])
         txt_q = rearrange(txt_q, "B L (H D) -> B H L D", H=self.num_heads)
         txt_q = self.txt_attn.norm.norm_q(txt_q, txt_dtype)
 
-        txt_k = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[self.hidden_size : 2 * self.hidden_size])
+        txt_k = nn.functional.linear(txt_modulated, txt_qkv_weight[self.hidden_size : 2 * self.hidden_size])
         txt_k = rearrange(txt_k, "B L (H D) -> B H L D", H=self.num_heads)
         txt_k = self.txt_attn.norm.norm_k(txt_k, txt_dtype)
 
-        txt_v = torch.nn.functional.linear(txt_modulated, txt_qkv_weight[2 * self.hidden_size :])
+        txt_v = nn.functional.linear(txt_modulated, txt_qkv_weight[2 * self.hidden_size :])
         del txt_qkv_weight, txt_modulated
         txt_v = rearrange(txt_v, "B L (H D) -> B H L D", H=self.num_heads)
 
@@ -1064,7 +1064,7 @@ class RMSNorm(LigerRMSNorm if HAS_LIGER else nn.Module):
         )
 
 
-class QKNorm(torch.nn.Module):
+class QKNorm(nn.Module):
     def __init__(self, dim: int):
         super().__init__()
         self.query_norm = RMSNorm(dim)
