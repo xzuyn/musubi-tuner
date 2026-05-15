@@ -99,15 +99,20 @@ class AttnBlock(nn.Module):
 
     def attention(self, h_: Tensor) -> Tensor:
         h_ = self.norm(h_)
-        q = self.q(h_)
-        k = self.k(h_)
-        v = self.v(h_)
 
+        q = self.q(h_)
         b, c, h, w = q.shape
         q = rearrange(q, "b c h w -> b 1 (h w) c").contiguous()
+
+        k = self.k(h_)
         k = rearrange(k, "b c h w -> b 1 (h w) c").contiguous()
+
+        v = self.v(h_)
         v = rearrange(v, "b c h w -> b 1 (h w) c").contiguous()
+
         h_ = nn.functional.scaled_dot_product_attention(q, k, v)
+
+        del q, k, v
 
         return rearrange(h_, "b 1 (h w) c -> b c h w", h=h, w=w, c=c, b=b)
 
