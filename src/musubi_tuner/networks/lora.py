@@ -20,7 +20,7 @@ logging.basicConfig(level=logging.INFO)
 HUNYUAN_TARGET_REPLACE_MODULES = ["MMDoubleStreamBlock", "MMSingleStreamBlock"]
 
 
-class LoRAModule(torch.nn.Module):
+class LoRAModule(nn.Module):
     """
     replaces forward method of the original Linear, instead of replacing the original Linear module.
     """
@@ -28,7 +28,7 @@ class LoRAModule(torch.nn.Module):
     def __init__(
         self,
         lora_name,
-        org_module: torch.nn.Module,
+        org_module: nn.Module,
         multiplier=1.0,
         lora_dim=4,
         alpha=1,
@@ -60,27 +60,27 @@ class LoRAModule(torch.nn.Module):
                 kernel_size = org_module.kernel_size
                 stride = org_module.stride
                 padding = org_module.padding
-                self.lora_down = torch.nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
-                self.lora_up = torch.nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
+                self.lora_down = nn.Conv2d(in_dim, self.lora_dim, kernel_size, stride, padding, bias=False)
+                self.lora_up = nn.Conv2d(self.lora_dim, out_dim, (1, 1), (1, 1), bias=False)
             else:
-                self.lora_down = torch.nn.Linear(in_dim, self.lora_dim, bias=False)
-                self.lora_up = torch.nn.Linear(self.lora_dim, out_dim, bias=False)
+                self.lora_down = nn.Linear(in_dim, self.lora_dim, bias=False)
+                self.lora_up = nn.Linear(self.lora_dim, out_dim, bias=False)
 
-            torch.nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
-            torch.nn.init.zeros_(self.lora_up.weight)
+            nn.init.kaiming_uniform_(self.lora_down.weight, a=math.sqrt(5))
+            nn.init.zeros_(self.lora_up.weight)
         else:
             # conv2d not supported
             assert sum(split_dims) == out_dim, "sum of split_dims must be equal to out_dim"
             assert org_module.__class__.__name__ == "Linear", "split_dims is only supported for Linear"
             # print(f"split_dims: {split_dims}")
-            self.lora_down = torch.nn.ModuleList(
-                [torch.nn.Linear(in_dim, self.lora_dim, bias=False) for _ in range(len(split_dims))]
+            self.lora_down = nn.ModuleList(
+                [nn.Linear(in_dim, self.lora_dim, bias=False) for _ in range(len(split_dims))]
             )
-            self.lora_up = torch.nn.ModuleList([torch.nn.Linear(self.lora_dim, split_dim, bias=False) for split_dim in split_dims])
+            self.lora_up = nn.ModuleList([nn.Linear(self.lora_dim, split_dim, bias=False) for split_dim in split_dims])
             for lora_down in self.lora_down:
-                torch.nn.init.kaiming_uniform_(lora_down.weight, a=math.sqrt(5))
+                nn.init.kaiming_uniform_(lora_down.weight, a=math.sqrt(5))
             for lora_up in self.lora_up:
-                torch.nn.init.zeros_(lora_up.weight)
+                nn.init.zeros_(lora_up.weight)
 
         if isinstance(alpha, torch.Tensor):
             alpha = alpha.detach().float().item()  # without casting, bf16 causes error
@@ -113,7 +113,7 @@ class LoRAModule(torch.nn.Module):
 
             # normal dropout
             if self.dropout is not None and self.training:
-                lx = torch.nn.functional.dropout(lx, p=self.dropout, inplace=True)
+                lx = nn.functional.dropout(lx, p=self.dropout, inplace=True)
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
@@ -138,7 +138,7 @@ class LoRAModule(torch.nn.Module):
 
             # normal dropout
             if self.dropout is not None and self.training:
-                lxs = [torch.nn.functional.dropout(lx, p=self.dropout, inplace=True) for lx in lxs]
+                lxs = [nn.functional.dropout(lx, p=self.dropout, inplace=True) for lx in lxs]
 
             # rank dropout
             if self.rank_dropout is not None and self.training:
@@ -169,7 +169,7 @@ class LoRAInfModule(LoRAModule):
     def __init__(
         self,
         lora_name,
-        org_module: torch.nn.Module,
+        org_module: nn.Module,
         multiplier=1.0,
         lora_dim=4,
         alpha=1,
@@ -217,7 +217,7 @@ class LoRAInfModule(LoRAModule):
                 )
             else:
                 # conv2d 3x3
-                conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+                conved = nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
                 # logger.info(conved.size(), weight.size(), module.stride, module.padding)
                 weight = weight + self.multiplier * conved * self.scale
 
@@ -226,7 +226,6 @@ class LoRAInfModule(LoRAModule):
             self.org_module.load_state_dict(org_sd)
         else:
             # split_dims
-            total_dims = sum(self.split_dims)
             for i in range(len(self.split_dims)):
                 # get up/down weight
                 down_weight = sd[f"lora_down.{i}.weight"].to(device, torch.float, non_blocking=non_blocking)  # (rank, in_dim)
@@ -261,7 +260,7 @@ class LoRAInfModule(LoRAModule):
             )
         else:
             # conv2d 3x3
-            conved = torch.nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
+            conved = nn.functional.conv2d(down_weight.permute(1, 0, 2, 3), up_weight).permute(1, 0, 2, 3)
             weight = self.multiplier * conved * self.scale
 
         return weight
@@ -418,7 +417,7 @@ def create_network(
     return network
 
 
-class LoRANetwork(torch.nn.Module):
+class LoRANetwork(nn.Module):
     # only supports U-Net (DiT), Text Encoders are not supported
 
     def __init__(
@@ -500,7 +499,7 @@ class LoRANetwork(torch.nn.Module):
         def create_modules(
             is_unet: bool,
             pfx: str,
-            root_module: torch.nn.Module,
+            root_module: nn.Module,
             target_replace_mods: Optional[List[str]] = None,
             filter: Optional[str] = None,
             default_dim: Optional[int] = None,
@@ -864,7 +863,7 @@ class LoRANetwork(torch.nn.Module):
             if up.shape[2:] == (1, 1) and down.shape[2:] == (1, 1):
                 updown = (up.squeeze(2).squeeze(2) @ down.squeeze(2).squeeze(2)).unsqueeze(2).unsqueeze(3)
             elif up.shape[2:] == (3, 3) or down.shape[2:] == (3, 3):
-                updown = torch.nn.functional.conv2d(down.permute(1, 0, 2, 3), up).permute(1, 0, 2, 3)
+                updown = nn.functional.conv2d(down.permute(1, 0, 2, 3), up).permute(1, 0, 2, 3)
             else:
                 updown = up @ down
 
