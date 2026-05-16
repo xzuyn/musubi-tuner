@@ -768,19 +768,23 @@ class SingleStreamBlock(nn.Module):
         q = nn.functional.linear(x_mod, w[:h])
         q = rearrange(q, "B L (H D) -> B H L D", H=self.num_heads)
         q = self.norm.norm_q(q, dtype)
+        q = apply_rope(q, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
 
         k = nn.functional.linear(x_mod, w[h : 2 * h])
         k = rearrange(k, "B L (H D) -> B H L D", H=self.num_heads)
         k = self.norm.norm_k(k, dtype)
+        k = apply_rope(k, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+        del pe
 
         v = nn.functional.linear(x_mod, w[2 * h : 3 * h])
         v = rearrange(v, "B L (H D) -> B H L D", H=self.num_heads)
+        v = v.transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
 
         mlp = nn.functional.linear(x_mod, w[3 * h :])
         del w, x_mod
 
-        attn = attention([q, k, v], pe, attn_params)
-        del q, k, v, pe
+        attn = unified_attention([q, k, v], attn_params=attn_params)
+        del q, k, v
 
         output = nn.functional.linear(attn, self.linear2.weight[:, :h])
         del attn
@@ -908,19 +912,25 @@ class DoubleStreamBlock(nn.Module):
         del txt_qkv_weight, txt_modulated
         txt_v = rearrange(txt_v, "B L (H D) -> B H L D", H=self.num_heads)
 
-        txt_len = txt_q.shape[2]
-        q = torch.cat((txt_q, img_q), dim=2)
-        del txt_q, img_q
-        k = torch.cat((txt_k, img_k), dim=2)
-        del txt_k, img_k
-        v = torch.cat((txt_v, img_v), dim=2)
-        del txt_v, img_v
-
         pe = torch.cat((pe_ctx, pe), dim=2)
         del pe_ctx
 
-        attn = attention([q, k, v], pe, attn_params)
-        del q, k, v, pe
+        txt_len = txt_q.shape[2]
+        q = torch.cat((txt_q, img_q), dim=2)
+        del txt_q, img_q
+        q = apply_rope(q, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+
+        k = torch.cat((txt_k, img_k), dim=2)
+        del txt_k, img_k
+        k = apply_rope(k, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+        del pe
+
+        v = torch.cat((txt_v, img_v), dim=2)
+        del txt_v, img_v
+        v = v.transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
+
+        attn = unified_attention([q, k, v], attn_params=attn_params)
+        del q, k, v
 
         txt_attn, img_attn = attn[:, :txt_len], attn[:, txt_len:]
         del attn
@@ -1106,19 +1116,6 @@ class QKNorm(nn.Module):
 
     def norm_k(self, k: Tensor, dtype: torch.dtype) -> Tensor:
         return self.key_norm(k).to(dtype=dtype)
-
-
-def attention(qkv_list: list[Tensor], pe: Tensor, attn_params: AttentionParams) -> Tensor:
-    q = qkv_list.pop(0)
-    q = apply_rope(q, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
-
-    k = qkv_list.pop(0)
-    k = apply_rope(k, pe).transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
-
-    v = qkv_list.pop(0)
-    v = v.transpose(1, 2).contiguous()  # B, H, L, D -> B, L, H, D
-
-    return unified_attention([q, k, v], attn_params=attn_params)
 
 
 def rope(pos: Tensor, dim: int, theta: int) -> Tensor:
