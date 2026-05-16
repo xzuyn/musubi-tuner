@@ -789,8 +789,9 @@ class SingleStreamBlock(nn.Module):
         del h, mlp
 
         output.mul_(mod_gate)
+        output.add_(x)
 
-        return x + output
+        return output
 
     def forward(self, x: Tensor, pe: Tensor, mod: tuple[Tensor, Tensor], attn_params: AttentionParams) -> Tensor:
         if self.training and self.gradient_checkpointing:
@@ -865,8 +866,10 @@ class DoubleStreamBlock(nn.Module):
 
         # prepare image for attention
         img_modulated = self.img_norm1(img)
-        img_modulated.mul_(1 + img_mod1_scale).add_(img_mod1_shift)
-        del img_mod1_scale, img_mod1_shift
+        img_modulated.mul_(1 + img_mod1_scale)
+        del img_mod1_scale
+        img_modulated.add_(img_mod1_shift)
+        del img_mod1_shift
 
         img_dtype = img_modulated.dtype
         img_qkv_weight = self.img_attn.qkv.weight
@@ -885,8 +888,10 @@ class DoubleStreamBlock(nn.Module):
 
         # prepare txt for attention
         txt_modulated = self.txt_norm1(txt)
-        txt_modulated.mul_(1 + txt_mod1_scale).add_(txt_mod1_shift)
-        del txt_mod1_scale, txt_mod1_shift
+        txt_modulated.mul_(1 + txt_mod1_scale)
+        del txt_mod1_scale
+        txt_modulated.add_(txt_mod1_shift)
+        del txt_mod1_shift
 
         txt_dtype = txt_modulated.dtype
         txt_qkv_weight = self.txt_attn.qkv.weight
@@ -921,24 +926,50 @@ class DoubleStreamBlock(nn.Module):
         del attn
 
         # calculate the img blocks
-        img = img + self.img_attn.proj(img_attn) * img_mod1_gate
-        del img_mod1_gate, img_attn
+        img_proj = self.img_attn.proj(img_attn)
+        del img_attn
+        img_proj.mul_(img_mod1_gate)
+        del img_mod1_gate
+        img_proj.add_(img)
+        img = img_proj
+        del img_proj
 
         img_temp = self.img_norm2(img)
-        img_temp.mul_(1 + img_mod2_scale).add_(img_mod2_shift)
-        del img_mod2_scale, img_mod2_shift
-        img = img + self.img_mlp(img_temp) * img_mod2_gate
-        del img_mod2_gate, img_temp
+        img_temp.mul_(1 + img_mod2_scale)
+        del img_mod2_scale
+        img_temp.add_(img_mod2_shift)
+        del img_mod2_shift
+
+        img_mlp_proj = self.img_mlp(img_temp)
+        del img_temp
+        img_mlp_proj.mul_(img_mod2_gate)
+        del img_mod2_gate
+        img_mlp_proj.add_(img)
+        img = img_mlp_proj
+        del img_mlp_proj
 
         # calculate the txt blocks
-        txt = txt + self.txt_attn.proj(txt_attn) * txt_mod1_gate
-        del txt_mod1_gate, txt_attn
+        txt_proj = self.txt_attn.proj(txt_attn)
+        del txt_attn
+        txt_proj.mul_(txt_mod1_gate)
+        del txt_mod1_gate
+        txt_proj.add_(txt)
+        txt = txt_proj
+        del txt_proj
 
         txt_temp = self.txt_norm2(txt)
-        txt_temp.mul_(1 + txt_mod2_scale).add_(txt_mod2_shift)
-        del txt_mod2_scale, txt_mod2_shift
-        txt = txt + self.txt_mlp(txt_temp) * txt_mod2_gate
-        del txt_mod2_gate, txt_temp
+        txt_temp.mul_(1 + txt_mod2_scale)
+        del txt_mod2_scale
+        txt_temp.add_(txt_mod2_shift)
+        del txt_mod2_shift
+
+        txt_mlp_proj = self.txt_mlp(txt_temp)
+        del txt_temp
+        txt_mlp_proj.mul_(txt_mod2_gate)
+        del txt_mod2_gate
+        txt_mlp_proj.add_(txt)
+        txt = txt_mlp_proj
+        del txt_mlp_proj
 
         return img, txt
 
