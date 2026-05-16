@@ -922,27 +922,31 @@ class DoubleStreamBlock(nn.Module):
 
         # calculate the img blocks
         img_mod1_gate.mul_(self.img_attn.proj(img_attn))
+        del img_attn
         img = img + img_mod1_gate
-        del img_mod1_gate, img_attn
+        del img_mod1_gate
 
         img_temp = self.img_norm2(img)
         img_temp.mul_(1 + img_mod2_scale).add_(img_mod2_shift)
         del img_mod2_scale, img_mod2_shift
         img_mod2_gate.mul_(self.img_mlp(img_temp))
+        del img_temp
         img = img + img_mod2_gate
-        del img_mod2_gate, img_temp
+        del img_mod2_gate
 
         # calculate the txt blocks
         txt_mod1_gate.mul_(self.txt_attn.proj(txt_attn))
+        del txt_attn
         txt = txt + txt_mod1_gate
-        del txt_mod1_gate, txt_attn
+        del txt_mod1_gate
 
         txt_temp = self.txt_norm2(txt)
         txt_temp.mul_(1 + txt_mod2_scale).add_(txt_mod2_shift)
         del txt_mod2_scale, txt_mod2_shift
         txt_mod2_gate.mul_(self.txt_mlp(txt_temp))
+        del txt_temp
         txt = txt + txt_mod2_gate
-        del txt_mod2_gate, txt_temp
+        del txt_mod2_gate
 
         return img, txt
 
